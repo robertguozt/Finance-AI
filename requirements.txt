@@ -1,0 +1,10 @@
+fastapi
+uvicorn[standard]
+pydantic
+google-generativeai
+yfinance
+requests
+sentence-transformers
+faiss-cpu
+nltk
+numpy
