@@ -17,11 +17,26 @@ except ImportError:
     sys.exit(1)
 
 # --- Download NLTK data (one-time) ---
-try:
-    nltk.data.find('tokenizers/punkt')
-except LookupError:
-    print("NLTK 'punkt' tokenizer not found. Downloading...")
-    nltk.download('punkt', quiet=True)
+# --- MODIFICATION ---
+# We've moved the download logic into a function that api_server.py can call
+# at startup.
+def download_nltk_data():
+    """
+    Downloads the NLTK 'punkt' tokenizer if not found.
+    """
+    try:
+        nltk.data.find('tokenizers/punkt')
+    except LookupError:
+        print("NLTK 'punkt' tokenizer not found. Downloading...")
+        nltk.download('punkt', quiet=True)
+    
+    # Also download the other resource you needed
+    try:
+        nltk.data.find('tokenizers/punkt_tab')
+    except LookupError:
+        print("NLTK 'punkt_tab' resource not found. Downloading...")
+        nltk.download('punkt_tab', quiet=True)
+# --- END MODIFICATION ---
 
 # --- Global var to hold the embedding model ---
 embedding_model = None
