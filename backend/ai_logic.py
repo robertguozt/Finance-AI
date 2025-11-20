@@ -1,65 +1,62 @@
 import sys
 import os
 import json
-
-# --- Import AI/LLM libraries ---
-try:
-    import google.generativeai as genai
-    import google.generativeai.types as genai_types
-except ImportError:
-    print("Error: The 'google-generativeai' library is not installed.")
-    print("Please install it using: pip install google-generativeai")
-    sys.exit(1)
+import google.generativeai as genai
+from google.generativeai.types import HarmCategory, HarmBlockThreshold
 
 # --- !! IMPORTANT !! ---
 # Load API key from environment variable (set in Render)
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 
-# Initialize model as None initially
+# --- Configure the Gemini API ---
 model = None
 
-# --- Configure the Gemini API ---
-try:
-    if GEMINI_API_KEY:
+def configure_genai():
+    global model
+    if not GEMINI_API_KEY:
+        print("Error: GEMINI_API_KEY is not set.")
+        return False
+
+    try:
         genai.configure(api_key=GEMINI_API_KEY)
-        try:
-            model = genai.GenerativeModel("models/gemini-2.5-pro")
-            print("Successfully initialized Gemini model: gemini-pro")
-        except Exception as model_error:
-            print(f"Error initializing Gemini model 'gemini-pro': {model_error}")
-            print("Trying alternative model names...")
-            # Try alternative model names
-            model_names = ['gemini-1.5-flash', 'models/gemini-pro', 'models/gemini-1.5-flash']
-            model = None
-            for model_name in model_names:
-                try:
-                    model = genai.GenerativeModel(model_name)
-                    print(f"Successfully initialized Gemini model: {model_name}")
-                    break
-                except Exception as e:
-                    print(f"Failed to initialize {model_name}: {e}")
-                    continue
-            
-            if model is None:
-                print("ERROR: Could not initialize any Gemini model. Please check your API key and model availability.")
-    else:
-        print("Warning: GEMINI_API_KEY is not set in environment.")
         
-except Exception as e:
-    print(f"Error configuring Gemini API: {e}")
-    model = None
+        # List of models to try in order of preference
+        # We prioritize models that are generally more permissive or stable
+        model_names = [
+            'gemini-1.5-flash',
+            'gemini-1.5-pro',
+            'gemini-1.0-pro',
+            'gemini-pro'
+        ]
+        
+        for name in model_names:
+            try:
+                print(f"Attempting to load model: {name}...")
+                model = genai.GenerativeModel(name)
+                # Test the model
+                model.generate_content("Test") 
+                print(f"Success! Using model: {name}")
+                return True
+            except Exception as e:
+                print(f"Failed to load {name}: {e}")
+                continue
+        
+        print("Error: Could not load ANY valid Gemini model.")
+        return False
+        
+    except Exception as e:
+        print(f"Error configuring Gemini API: {e}")
+        return False
+
+# Initialize on load
+configure_genai()
 
 # --- 1. RAG Retrieval ---
-
 def retrieve_relevant_chunks(query, vector_index, text_chunks, metadata, k=5):
-    """
-    Searches the FAISS index for the top-k most relevant text chunks.
-    """
     if vector_index is None:
         print("Vector index is not available.")
         return [], []
     
-    # 1. Embed the query
     try:
         from data_fetcher import embedding_model
         if embedding_model is None:
@@ -70,16 +67,16 @@ def retrieve_relevant_chunks(query, vector_index, text_chunks, metadata, k=5):
         print(f"Error encoding query: {e}")
         return [], []
 
-    # 2. Search the FAISS index
     try:
-        D, I = vector_index.search(query_embedding, k)
+        import numpy as np
+        query_vector = np.array(query_embedding).astype('float32')
+        D, I = vector_index.search(query_vector, k)
     except Exception as e:
         print(f"Error searching FAISS index: {e}")
         return [], []
 
-    # 3. Format the results
     relevant_chunks = []
-    citations = set()  # Use a set to avoid duplicate citations
+    citations = set()
     
     for i, chunk_index in enumerate(I[0]):
         if chunk_index < 0 or chunk_index >= len(text_chunks):
@@ -88,7 +85,6 @@ def retrieve_relevant_chunks(query, vector_index, text_chunks, metadata, k=5):
         chunk = text_chunks[chunk_index]
         meta = metadata[chunk_index]
         
-        # Use .get() to provide default values
         source_name = meta.get('source', 'Unknown Source')
         source_url = meta.get('url', '#')
         source_date = meta.get('date', 'N/A')
@@ -100,38 +96,30 @@ def retrieve_relevant_chunks(query, vector_index, text_chunks, metadata, k=5):
 
     return relevant_chunks, list(citations)
 
-# --- 2. Prompt Engineering (UPDATED) ---
-
+# --- 2. Prompt Engineering ---
 def build_prompt(ticker, fundamentals, relevant_chunks, citations, user_profile):
-    """
-    Builds the final prompt string to send to the LLM.
-    """
-    
-    # --- System Prompt: The AI's "Instructions" ---
     system_prompt = """
-You are an expert financial analyst and portfolio manager. Your task is to provide a comprehensive, data-driven analysis for a *specific user* based on their profile and the provided data.
+You are an expert financial analyst. Your task is to provide a comprehensive analysis for a user.
 
 **USER PROFILE:**
-- **Financial Condition:** {user_profile_financialCondition}
-- **Risk Tolerance:** {user_profile_riskTolerance}
-- **Expected Return %:** {user_profile_expectedReturn}%
-- **Trading Preferences:** {user_profile_tradingPreferences}
+- **Financial Condition:** {user_profile.financialCondition}
+- **Risk Tolerance:** {user_profile.riskTolerance}
+- **Expected Return %:** {user_profile.expectedReturn}%
+- **Trading Preferences:** {user_profile.tradingPreferences}
 
 **YOUR TASK:**
-Analyze the provided stock data and generate a personalized report. The user is asking for:
-1.  A 12-month price forecast with historical and forecasted months.
-2.  Specific investment advice with numerical values: entry point (dollar price), expected return (percentage), and stop loss (dollar price).
+Analyze the provided stock data and generate a report with:
+1.  A 12-month price forecast (logical estimation based on data).
+2.  Specific investment advice (entry point, return %, stop loss).
 
 **RULES:**
-1.  Do NOT use any external knowledge. Base your *entire* analysis on the provided data.
-2.  **CRITICAL:** You *must* generate the 12-month forecast and investment advice, even if the data is limited. Use the fundamentals and news sentiment to make logical estimations.
-3.  The user's profile is the most important context. All advice *must* be tailored to their risk tolerance.
-4.  The output must be formatted *exactly* as a single JSON object. Do not include markdown formatting (```json) or any text outside the curly braces.
+1.  Base your analysis ONLY on the provided data.
+2.  The output must be a SINGLE JSON object. Do not include markdown formatting.
 
 **REQUIRED JSON OUTPUT FORMAT:**
 {{
-  "analysis": "Detailed analysis text here...",
-  "keyNews": "Summary of key news here...",
+  "analysis": "...",
+  "keyNews": "...",
   "forecastData": [
     {{"month": "Jan", "price": 150, "type": "history"}},
     {{"month": "Feb", "price": 155, "type": "history"}},
@@ -147,214 +135,81 @@ Analyze the provided stock data and generate a personalized report. The user is 
     {{"month": "Dec", "price": 205, "type": "forecast"}}
   ],
   "investmentAdvice": {{
-    "entryPoint": 150.00,
-    "expectedReturn": 15.5,
-    "stopLoss": 140.00
+    "entryPoint": 175.50,
+    "expectedReturn": 18.0,
+    "stopLoss": 168.00
   }}
-
-**IMPORTANT NOTES:**
-- "entryPoint" must be a number (the recommended buy price in dollars)
-- "expectedReturn" must be a number (the expected return percentage, e.g., 15.5 means 15.5%)
-- "stopLoss" must be a number (the recommended stop loss price in dollars)
-- "forecastData" must include at least 8 months marked as "history" and at least 4 months marked as "forecast"
-- Use abbreviated month names (Jan, Feb, Mar, etc.)
 }}
 """
-    # Format the system prompt with user profile data
-    formatted_system_prompt = system_prompt.format(
-        user_profile_financialCondition=", ".join(user_profile.financialCondition),
-        user_profile_riskTolerance=user_profile.riskTolerance,
-        user_profile_expectedReturn=user_profile.expectedReturn,
-        user_profile_tradingPreferences=user_profile.tradingPreferences
-    )
-    
-    # Format the fundamentals data
     fundamentals_str = "\n".join(f"- {key}: {value}" for key, value in fundamentals.items())
     
-    # Format the news chunks
     if relevant_chunks:
         news_str = "\n\n---\n\n".join(relevant_chunks)
     else:
         news_str = "No recent news articles were found or provided."
         
-    # Combine it all
+    formatted_system_prompt = system_prompt.format(user_profile=user_profile)
+    
     user_prompt_data = f"""
 --- START OF DATA ---
-
-**Stock Ticker:**
-{ticker}
-
+**Stock Ticker:** {ticker}
 **Financial Indicators:**
 {fundamentals_str}
-
 **Recent News Articles:**
 {news_str}
-
 --- END OF DATA ---
-
-Please provide your analysis based *only* on the data above, following all rules and the required JSON format.
 """
-    
     return formatted_system_prompt + user_prompt_data
 
-# --- 3. AI Generation (UPDATED) ---
-
+# --- 3. AI Generation ---
 def get_analysis(prompt_text):
-    """
-    Sends the prompt to the Gemini API and gets the response.
-    """
-    if not GEMINI_API_KEY:
-        return json.dumps({
-            "analysis": "Error: Gemini API key is not configured.",
-            "keyNews": "Please check backend configuration.",
-            "forecastData": [],
-            "investmentAdvice": {
-                "entryPoint": None,
-                "expectedReturn": None,
-                "stopLoss": None
-            }
-        })
-        
-    if model is None:
-        return json.dumps({
-            "analysis": "Error: Gemini model not initialized.",
-            "keyNews": "Please check backend configuration.",
-            "forecastData": [],
-            "investmentAdvice": {
-                "entryPoint": None,
-                "expectedReturn": None,
-                "stopLoss": None
-            }
-        })
+    global model
+    if not model:
+        if not configure_genai():
+            return json.dumps({
+                "analysis": "Error: AI Model could not be loaded. Check API keys.",
+                "keyNews": "System Error",
+                "forecastData": [],
+                "investmentAdvice": {"entryPoint": 0, "expectedReturn": 0, "stopLoss": 0}
+            })
         
     try:
         print("Generating analysis with Gemini API...")
         
-        # Configure for JSON response
-        generation_config = {
-            "temperature": 0.1,  # Lower temperature for more consistent results
-            "max_output_tokens": 4096,
+        # --- NEW: Explicitly Disable ALL Safety Filters ---
+        # This is the key fix for "finish_reason 2"
+        safety_settings = {
+            HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_NONE,
+            HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_NONE,
+            HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT: HarmBlockThreshold.BLOCK_NONE,
+            HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_NONE,
         }
-
-        # Safety settings - allow financial analysis while maintaining safety
-        safety_settings = [
-            {
-                "category": genai_types.HarmCategory.HARM_CATEGORY_HARASSMENT,
-                "threshold": genai_types.HarmBlockThreshold.BLOCK_MEDIUM_AND_ABOVE,
-            },
-            {
-                "category": genai_types.HarmCategory.HARM_CATEGORY_HATE_SPEECH,
-                "threshold": genai_types.HarmBlockThreshold.BLOCK_MEDIUM_AND_ABOVE,
-            },
-            {
-                "category": genai_types.HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT,
-                "threshold": genai_types.HarmBlockThreshold.BLOCK_MEDIUM_AND_ABOVE,
-            },
-            {
-                "category": genai_types.HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT,
-                "threshold": genai_types.HarmBlockThreshold.BLOCK_ONLY_HIGH,  # More lenient for financial advice
-            },
-        ]
+        
+        generation_config = {"response_mime_type": "application/json"}
         
         response = model.generate_content(
             prompt_text,
             generation_config=generation_config,
             safety_settings=safety_settings
         )
+        
+        # Safety Check: Even with settings off, check if it was blocked
+        if response.prompt_feedback and response.prompt_feedback.block_reason:
+            print(f"Request blocked! Reason: {response.prompt_feedback.block_reason}")
+            return json.dumps({
+                "analysis": f"Analysis blocked by safety filter: {response.prompt_feedback.block_reason}. Please try a different stock.",
+                "keyNews": "Blocked",
+                "forecastData": [],
+                "investmentAdvice": {"entryPoint": 0, "expectedReturn": 0, "stopLoss": 0}
+            })
 
-        # Check if response has valid candidates and parts
-        if not response.candidates or len(response.candidates) == 0:
-            raise Exception("No candidates in response. The API may have filtered the content.")
+        return response.text
         
-        candidate = response.candidates[0]
-        finish_reason = candidate.finish_reason
-        
-        # Handle different finish reasons
-        finish_reason_names = {
-            0: "STOP (normal completion)",
-            1: "MAX_TOKENS (token limit reached)",
-            2: "SAFETY (content filtered)",
-            3: "RECITATION (recitation filter)",
-            4: "OTHER"
-        }
-        
-        print(f"Response finish_reason: {finish_reason} ({finish_reason_names.get(finish_reason, 'UNKNOWN')})")
-        
-        # Check if response was blocked by safety filters
-        if finish_reason == 2:  # SAFETY
-            safety_ratings = candidate.safety_ratings if hasattr(candidate, 'safety_ratings') else []
-            safety_info = ", ".join([f"{rating.category}:{rating.probability}" for rating in safety_ratings]) if safety_ratings else "No details available"
-            raise Exception(f"Response blocked by safety filters. Safety ratings: {safety_info}. Try rephrasing the prompt or adjusting the content.")
-        
-        # Check if response was blocked by recitation filter
-        if finish_reason == 3:  # RECITATION
-            raise Exception("Response blocked by recitation filter. The content may be too similar to copyrighted material.")
-        
-        # Check if response has content
-        if not hasattr(candidate, 'content') or not candidate.content or not candidate.content.parts:
-            if finish_reason == 1:  # MAX_TOKENS
-                raise Exception("Response hit token limit. The prompt may be too long or the output exceeded max_output_tokens.")
-            else:
-                raise Exception(f"Response has no valid content. Finish reason: {finish_reason}")
-        
-        # Check if the first part has text
-        if not candidate.content.parts[0].text:
-            raise Exception(f"Response part has no text content. Finish reason: {finish_reason}")
-        
-        # Try to parse the response as JSON
-        try:
-            # Clean the response text
-            cleaned_response = response.text.strip()
-            if cleaned_response.startswith('```json'):
-                cleaned_response = cleaned_response[7:]
-            if cleaned_response.endswith('```'):
-                cleaned_response = cleaned_response[:-3]
-            
-            # Parse to validate it's proper JSON
-            parsed_json = json.loads(cleaned_response)
-            return cleaned_response
-            
-        except json.JSONDecodeError:
-            # If response isn't valid JSON, create a fallback response
-            print("Warning: Gemini response was not valid JSON, creating fallback")
-            fallback_response = {
-                "analysis": f"AI Analysis: {response.text[:500]}...",
-                "keyNews": "News analysis available in main analysis",
-                "forecastData": [
-                    {"month": "Jan", "price": 150, "type": "forecast"},
-                    {"month": "Feb", "price": 155, "type": "forecast"},
-                    {"month": "Mar", "price": 160, "type": "forecast"}
-                ],
-                "investmentAdvice": {
-                    "entryPoint": None,
-                    "expectedReturn": None,
-                    "stopLoss": None
-                }
-            }
-            return json.dumps(fallback_response)
     except Exception as e:
-        error_msg = str(e)
-        print(f"Error during Gemini API call: {error_msg}")
-        
-        # Check for specific error types
-        if "API key" in error_msg or "authentication" in error_msg.lower():
-            detailed_error = "AI Model could not be loaded. Check API keys. Please verify your GEMINI_API_KEY is set correctly in the environment variables."
-        elif "404" in error_msg or "not found" in error_msg.lower():
-            detailed_error = f"AI Model error: Model not found. Details: {error_msg}"
-        elif "403" in error_msg or "permission" in error_msg.lower():
-            detailed_error = f"AI Model error: Permission denied. Please check your API key permissions. Details: {error_msg}"
-        else:
-            detailed_error = f"Error: Could not get analysis from API. Details: {error_msg}"
-            
-        error_response = {
-            "analysis": detailed_error,
-            "keyNews": "API call failed - please check backend logs for details",
+        print(f"Error during Gemini API call: {e}")
+        return json.dumps({
+            "analysis": f"Error: {str(e)}",
+            "keyNews": "API call failed",
             "forecastData": [],
-            "investmentAdvice": {
-                "entryPoint": None,
-                "expectedReturn": None,
-                "stopLoss": None
-            }
-        }
-        return json.dumps(error_response)
-    
+            "investmentAdvice": {"entryPoint": 0, "expectedReturn": 0, "stopLoss": 0}
+        })
