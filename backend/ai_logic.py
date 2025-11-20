@@ -17,37 +17,14 @@ def configure_genai():
         return False
 
     try:
-        genai.configure(api_key=GEMINI_API_KEY)
-        
-        # List of models to try in order of preference
-        model_names = [
-            'gemini-1.5-flash',      # Fastest & newest
-            'gemini-1.5-pro',        # Most capable
-            'gemini-1.0-pro',        # Older stable
-            'gemini-pro'             # Legacy alias
-        ]
-        
-        for name in model_names:
-            try:
-                print(f"Attempting to load model: {name}...")
-                model = genai.GenerativeModel(name)
-                # Test the model with a simple prompt to ensure it works
-                model.generate_content("Test") 
-                print(f"Success! Using model: {name}")
-                return True
-            except Exception as e:
-                print(f"Failed to load {name}: {e}")
-                continue
-        
-        print("Error: Could not load ANY valid Gemini model.")
-        return False
+        if GEMINI_API_KEY:
+            genai.configure(api_key=GEMINI_API_KEY)
+            model = genai.GenerativeModel('gemini-pro')
+        else:
+            print("Warning: GEMINI_API_KEY is not set in environment.")
         
     except Exception as e:
         print(f"Error configuring Gemini API: {e}")
-        return False
-
-# Initialize on load (will be re-run by lifespan too)
-configure_genai()
 
 # --- 1. RAG Retrieval ---
 def retrieve_relevant_chunks(query, vector_index, text_chunks, metadata, k=5):
@@ -203,3 +180,4 @@ def get_analysis(prompt_text):
             "forecastData": [],
             "investmentAdvice": {"entryPoint": 0, "expectedReturn": 0, "stopLoss": 0}
         })
+
