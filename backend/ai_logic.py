@@ -22,13 +22,7 @@ try:
     if GEMINI_API_KEY:
         genai.configure(api_key=GEMINI_API_KEY)
         # Try multiple model names for better compatibility
-        try:
-            model = genai.GenerativeModel('gemini-2.5-pro')  # Newer, faster model
-        except:
-            try:
-                model = genai.GenerativeModel('gemini-1.0-pro')  # Fallback to original
-            except Exception as e:
-                print(f"Error initializing Gemini model: {e}")
+        model = genai.GenerativeModel('gemini-1.0-pro')
     else:
         print("Warning: GEMINI_API_KEY is not set in environment.")
         
@@ -272,5 +266,6 @@ def get_analysis(prompt_text):
             }
         }
         return json.dumps(error_response)
+
 
 
