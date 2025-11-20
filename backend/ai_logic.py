@@ -22,7 +22,7 @@ try:
     if GEMINI_API_KEY:
         genai.configure(api_key=GEMINI_API_KEY)
         try:
-            model = genai.GenerativeModel('gemini-pro')
+            model = genai.GenerativeModel("models/gemini-2.5-pro")
             print("Successfully initialized Gemini model: gemini-pro")
         except Exception as model_error:
             print(f"Error initializing Gemini model 'gemini-pro': {model_error}")
@@ -297,4 +297,5 @@ def get_analysis(prompt_text):
         }
         return json.dumps(error_response)
     
+
 
