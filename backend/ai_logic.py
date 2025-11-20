@@ -23,7 +23,7 @@ try:
         genai.configure(api_key=GEMINI_API_KEY)
         # Try multiple model names for better compatibility
         try:
-            model = genai.GenerativeModel('gemini-1.5-flash')  # Newer, faster model
+            model = genai.GenerativeModel('gemini-2.5-pro')  # Newer, faster model
         except:
             try:
                 model = genai.GenerativeModel('gemini-1.0-pro')  # Fallback to original
@@ -272,4 +272,5 @@ def get_analysis(prompt_text):
             }
         }
         return json.dumps(error_response)
+
 
