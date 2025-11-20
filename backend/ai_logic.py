@@ -105,8 +105,8 @@ You are an expert financial analyst and portfolio manager. Your task is to provi
 
 **YOUR TASK:**
 Analyze the provided stock data and generate a personalized report. The user is asking for:
-1.  A 12-month price forecast.
-2.  Specific investment advice (entry point, return %, stop loss).
+1.  A 12-month price forecast with historical and forecasted months.
+2.  Specific investment advice with numerical values: entry point (dollar price), expected return (percentage), and stop loss (dollar price).
 
 **RULES:**
 1.  Do NOT use any external knowledge. Base your *entire* analysis on the provided data.
@@ -133,10 +133,16 @@ Analyze the provided stock data and generate a personalized report. The user is 
     {{"month": "Dec", "price": 205, "type": "forecast"}}
   ],
   "investmentAdvice": {{
-    "summary": "Investment summary...",
-    "reasoning": "Reasoning for the advice...",
-    "riskAssessment": "Low/Medium/High"
+    "entryPoint": 150.00,
+    "expectedReturn": 15.5,
+    "stopLoss": 140.00
   }}
+  **IMPORTANT NOTES:**
+- "entryPoint" must be a number (the recommended buy price in dollars)
+- "expectedReturn" must be a number (the expected return percentage, e.g., 15.5 means 15.5%)
+- "stopLoss" must be a number (the recommended stop loss price in dollars)
+- "forecastData" must include at least 8 months marked as "history" and at least 4 months marked as "forecast"
+- Use abbreviated month names (Jan, Feb, Mar, etc.)
 }}
 """
     
@@ -266,3 +272,4 @@ def get_analysis(prompt_text):
             }
         }
         return json.dumps(error_response)
+
