@@ -23,10 +23,10 @@ def configure_genai():
         # List of models to try in order of preference
         # We prioritize models that are generally more permissive or stable
         model_names = [
-            'gemini-1.5-flash',
-            'gemini-1.5-pro',
-            'gemini-1.0-pro',
-            'gemini-pro'
+            'models/gemini-2.5-flash',
+            'models/gemini-2.5-pro',
+            'models/gemini-2.0-pro-exp',
+            'models/gemini-2.0-flash-lite'
         ]
         
         for name in model_names:
@@ -213,3 +213,4 @@ def get_analysis(prompt_text):
             "forecastData": [],
             "investmentAdvice": {"entryPoint": 0, "expectedReturn": 0, "stopLoss": 0}
         })
+
