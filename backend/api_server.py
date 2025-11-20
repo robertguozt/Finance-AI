@@ -267,48 +267,121 @@ async def health_check():
     return {"status": "healthy"}
 
 @app.post("/api/analyze")
-async def analyze_direct(request: AnalysisRequest, background_tasks: BackgroundTasks):
+async def analyze_direct(request: AnalysisRequest):
     """
-    Real analysis endpoint that processes user inputs
+    Real analysis endpoint that processes user inputs synchronously
+    and returns complete results immediately.
     """
     try:
         print(f"=== Starting Real Analysis ===")
         print(f"Ticker: {request.ticker}")
         print(f"Risk: {request.riskTolerance}")
         print(f"Expected Return: {request.expectedReturn}%")
+        ticker = request.ticker.upper()
         
         # Check cache first
-        cached_result = get_cached_analysis(request.ticker)
+        cached_result = get_cached_analysis(ticker)
         if cached_result:
             print("Returning cached result")
             return {"analysis": cached_result}
         
-        # Create a job for background processing
-        job_id = str(uuid.uuid4())
-        create_job(job_id)
+        if not YOUR_API_KEY:
+            error_response = {
+                "analysis": "Error: NewsAPI key is not configured on the server.",
+                "keyNews": "Please check backend configuration.",
+                "forecastData": [],
+                "investmentAdvice": {
+                    "entryPoint": None,
+                    "expectedReturn": None,
+                    "stopLoss": None
+                },
+                "recommendedStocks": []
+            }
+            return {"analysis": json.dumps(error_response)}
         
-        # Start the real analysis in background
-        background_tasks.add_task(run_full_analysis_task, job_id, request)
+        # --- Run the full analysis synchronously ---
+        print(f"Fetching fundamentals for {ticker}...")
+        fundamentals, summary = get_fundamentals(ticker)
+        if not fundamentals:
+            error_response = {
+                "analysis": f"Error: Could not fetch fundamental data for ticker {ticker}.",
+                "keyNews": "Please check if the ticker symbol is valid.",
+                "forecastData": [],
+                "investmentAdvice": {
+                    "entryPoint": None,
+                    "expectedReturn": None,
+                    "stopLoss": None
+                },
+                "recommendedStocks": []
+            }
+            return {"analysis": json.dumps(error_response)}
         
-        # For now, return a simple response while processing
-        # In a real app, you'd use the job system to check status
-        simple_response = {
-            "analysis": "Analysis started... this may take a moment.",
+        print(f"Fetching news for {ticker}...")
+        news = get_news(ticker, YOUR_API_KEY)
+        
+        print(f"Processing and embedding data...")
+        vector_index, text_chunks, metadata = process_and_embed(news, summary, ticker)
+        
+        query = f"Recent news, developments, and user context for {ticker}"
+        relevant_chunks, citations = retrieve_relevant_chunks(
+            query, vector_index, text_chunks, metadata
+        )
+        
+        print(f"Building AI prompt...")
+        user_prompt = build_prompt(
+            ticker=request.ticker,
+            fundamentals=fundamentals,
+            relevant_chunks=relevant_chunks,
+            citations=citations,
+            user_profile=request  
+        )
+        
+        print(f"Calling AI model...")
+        ai_json_string = get_analysis(user_prompt)
+        
+        # --- Get Rule-Based Recommendations ---
+        print(f"Running rule-based stock recommender...")
+        recommendations_list = recommend_stocks(
+            trading_history=request.tradingPreferences,
+            financial_condition=request.financialCondition,
+            expected_return=request.expectedReturn,
+            risk_tolerance=request.riskTolerance
+        )
+        
+        # --- Combine Results ---
+        print(f"Combining results...")
+        ai_data = json.loads(ai_json_string)
+        ai_data['recommendedStocks'] = recommendations_list
+        
+        if citations:
+            citation_header = "\n\n--- Sources ---\n"
+            citation_list = "\n".join(citations)
+            ai_data['analysis'] += citation_header + citation_list
+        
+        final_json_string = json.dumps(ai_data)
+        
+        # --- Cache the result ---
+        set_cached_analysis(ticker, final_json_string)
+        
+        print(f"=== Analysis Complete ===")
+        return {"analysis": final_json_string}
+        
+    except Exception as e:
+        print(f"Error in analyze_direct: {e}")
+        import traceback
+        traceback.print_exc()
+        error_response = {
+            "analysis": f"Error: An unexpected error occurred: {str(e)}",
+            "keyNews": "Please try again later or contact support.",
+            "forecastData": [],
             "investmentAdvice": {
                 "entryPoint": None,
                 "expectedReturn": None,
                 "stopLoss": None
             },
-            "forecastData": [],
-            "recommendedStocks": [],
-            "keyNews": "Fetching latest news..."
+            "recommendedStocks": []
         }
-        
-        return {"analysis": json.dumps(simple_response)}
-        
-    except Exception as e:
-        print(f"Error in analyze_direct: {e}")
-        return {"error": str(e)}
+        return {"analysis": json.dumps(error_response)}
 
 @app.post("/api/start-analysis", response_model=AnalysisResponse)
 async def start_analysis(request: AnalysisRequest, background_tasks: BackgroundTasks):
@@ -345,5 +418,6 @@ if __name__ == "__main__":
     host = os.environ.get("HOST", "0.0.0.0") 
     print(f"--- Running on http://{host}:{port} ---")
     uvicorn.run("api_server:app", host=host, port=port, reload=False)
+
 
 
