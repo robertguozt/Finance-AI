@@ -49,19 +49,17 @@ export function StockChart({ data }: StockChartProps) {
     );
   }
 
-  // Split data for styling
+  // Split data for styling - but we need to create separate dataKeys for the chart
+  // Recharts works best when all data is in one array and we use separate keys or filters
   const historyData = data.filter((d) => d.type === 'history');
   const forecastData = data.filter((d) => d.type === 'forecast');
 
-  // Create a connector array to link the two lines seamlessly
-  // It takes the last point of history and the first point of the forecast
-  const connectorData: ForecastData[] = [];
-  if (historyData.length > 0) {
-    connectorData.push(historyData[historyData.length - 1]);
-    if (forecastData.length > 0) {
-      connectorData.push(forecastData[0]);
-    }
-  }
+    // Create combined data with separate keys for history and forecast
+  const chartData = data.map((item) => ({
+    month: item.month,
+    historicalPrice: item.type === 'history' ? item.price : null,
+    forecastPrice: item.type === 'forecast' ? item.price : null,
+  }));
 
   return (
     <Card>
@@ -78,7 +76,7 @@ export function StockChart({ data }: StockChartProps) {
         <div className="h-72 w-full">
           <ResponsiveContainer width="100%" height="100%">
             <LineChart
-              data={data}
+              data={chartData}
               margin={{
                 top: 5,
                 right: 30,
@@ -107,41 +105,31 @@ export function StockChart({ data }: StockChartProps) {
                 }}
                 labelStyle={{ color: "#f9fafb" }}
                 itemStyle={{ color: "#f9fafb" }}
+                formatter={(value: any) => value !== null ? `$${value.toFixed(2)}` : ''}
               />
               <Legend />
               
               {/* The solid "Historical" line */}
               <Line
                 type="monotone"
-                dataKey="price"
-                data={historyData}
+                dataKey="historicalPrice"
                 stroke="#4f46e5" // indigo-600
                 strokeWidth={2}
                 name="Historical"
                 dot={false}
+                connectNulls={false}
               />
               
               {/* The dashed "Forecast" line */}
               <Line
                 type="monotone"
-                dataKey="price"
-                data={forecastData}
+                dataKey="forecastPrice"
                 stroke="#a78bfa" // violet-400
                 strokeWidth={2}
                 name="Forecast"
                 strokeDasharray="5 5"
                 dot={false}
-              />
-
-              {/* A small, invisible line to bridge the gap */}
-              <Line
-                type="monotone"
-                dataKey="price"
-                data={connectorData}
-                stroke="#4f46e5" // Use historical color to connect
-                strokeWidth={2}
-                dot={false}
-                legendType="none" // Hide from legend
+                connectNulls={false}
               />
             </LineChart>
           </ResponsiveContainer>
