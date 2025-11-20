@@ -5,6 +5,7 @@ import json
 # --- Import AI/LLM libraries ---
 try:
     import google.generativeai as genai
+    import google.generativeai.types as genai_types
 except ImportError:
     print("Error: The 'google-generativeai' library is not installed.")
     print("Please install it using: pip install google-generativeai")
@@ -232,13 +233,73 @@ def get_analysis(prompt_text):
         # Configure for JSON response
         generation_config = {
             "temperature": 0.1,  # Lower temperature for more consistent results
-            "max_output_tokens": 2048,
+            "max_output_tokens": 4096,
         }
+
+        # Safety settings - allow financial analysis while maintaining safety
+        safety_settings = [
+            {
+                "category": genai_types.HarmCategory.HARM_CATEGORY_HARASSMENT,
+                "threshold": genai_types.HarmBlockThreshold.BLOCK_MEDIUM_AND_ABOVE,
+            },
+            {
+                "category": genai_types.HarmCategory.HARM_CATEGORY_HATE_SPEECH,
+                "threshold": genai_types.HarmBlockThreshold.BLOCK_MEDIUM_AND_ABOVE,
+            },
+            {
+                "category": genai_types.HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT,
+                "threshold": genai_types.HarmBlockThreshold.BLOCK_MEDIUM_AND_ABOVE,
+            },
+            {
+                "category": genai_types.HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT,
+                "threshold": genai_types.HarmBlockThreshold.BLOCK_ONLY_HIGH,  # More lenient for financial advice
+            },
+        ]
         
         response = model.generate_content(
             prompt_text,
-            generation_config=generation_config
+            generation_config=generation_config,
+            safety_settings=safety_settings
         )
+
+        # Check if response has valid candidates and parts
+        if not response.candidates or len(response.candidates) == 0:
+            raise Exception("No candidates in response. The API may have filtered the content.")
+        
+        candidate = response.candidates[0]
+        finish_reason = candidate.finish_reason
+        
+        # Handle different finish reasons
+        finish_reason_names = {
+            0: "STOP (normal completion)",
+            1: "MAX_TOKENS (token limit reached)",
+            2: "SAFETY (content filtered)",
+            3: "RECITATION (recitation filter)",
+            4: "OTHER"
+        }
+        
+        print(f"Response finish_reason: {finish_reason} ({finish_reason_names.get(finish_reason, 'UNKNOWN')})")
+        
+        # Check if response was blocked by safety filters
+        if finish_reason == 2:  # SAFETY
+            safety_ratings = candidate.safety_ratings if hasattr(candidate, 'safety_ratings') else []
+            safety_info = ", ".join([f"{rating.category}:{rating.probability}" for rating in safety_ratings]) if safety_ratings else "No details available"
+            raise Exception(f"Response blocked by safety filters. Safety ratings: {safety_info}. Try rephrasing the prompt or adjusting the content.")
+        
+        # Check if response was blocked by recitation filter
+        if finish_reason == 3:  # RECITATION
+            raise Exception("Response blocked by recitation filter. The content may be too similar to copyrighted material.")
+        
+        # Check if response has content
+        if not hasattr(candidate, 'content') or not candidate.content or not candidate.content.parts:
+            if finish_reason == 1:  # MAX_TOKENS
+                raise Exception("Response hit token limit. The prompt may be too long or the output exceeded max_output_tokens.")
+            else:
+                raise Exception(f"Response has no valid content. Finish reason: {finish_reason}")
+        
+        # Check if the first part has text
+        if not candidate.content.parts[0].text:
+            raise Exception(f"Response part has no text content. Finish reason: {finish_reason}")
         
         # Try to parse the response as JSON
         try:
@@ -297,5 +358,3 @@ def get_analysis(prompt_text):
         }
         return json.dumps(error_response)
     
-
-
