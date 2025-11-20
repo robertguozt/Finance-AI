@@ -11,25 +11,31 @@ import {
   Legend,
   ResponsiveContainer,
 } from "recharts";
+
+// --- FIX: Changed path to be explicitly correct based on your folder structure ---
+// Assuming your folder structure is:
+// frontend/
+//   components/
+//     ui/
+//       card.tsx
+//     StockChart.tsx
 import {
   Card,
   CardContent,
   CardHeader,
   CardTitle,
   CardDescription
-} from "../components/ui/card.tsx"; // Using Shadcn/ui Card component
+} from "../components/ui/card"; 
 
-// --- FIX: Using relative path to import the type from page.tsx ---
-import { ForecastData } from "../lib/types.ts";
+import { ForecastData } from "../lib/types";
 
-// Define the props for the chart component
 interface StockChartProps {
   data: ForecastData[];
 }
 
 export function StockChart({ data }: StockChartProps) {
   
-  // Handle cases where data might be null or undefined
+  // 1. Handle Loading/Empty State
   if (!data || data.length === 0) {
     return (
       <Card>
@@ -41,7 +47,6 @@ export function StockChart({ data }: StockChartProps) {
         </CardHeader>
         <CardContent>
           <div className="h-72 flex items-center justify-center bg-gray-100 dark:bg-gray-800 rounded-md">
-            <Loader2 className="h-8 w-8 text-gray-500 animate-spin" />
             <p className="text-gray-500 ml-3">Waiting for data...</p>
           </div>
         </CardContent>
@@ -49,17 +54,54 @@ export function StockChart({ data }: StockChartProps) {
     );
   }
 
-  // Split data for styling - but we need to create separate dataKeys for the chart
-  // Recharts works best when all data is in one array and we use separate keys or filters
-  const historyData = data.filter((d) => d.type === 'history');
-  const forecastData = data.filter((d) => d.type === 'forecast');
+  // 2. Sanitize Data: Ensure prices are numbers and months exist
+  const sanitizedData = data.map(item => ({
+    ...item,
+    price: typeof item.price === 'string' ? parseFloat(item.price) : item.price,
+    month: item.month || '?' 
+  })).filter(item => !isNaN(item.price));
 
-    // Create combined data with separate keys for history and forecast
-  const chartData = data.map((item) => ({
-    month: item.month,
-    historicalPrice: item.type === 'history' ? item.price : null,
-    forecastPrice: item.type === 'forecast' ? item.price : null,
-  }));
+  // 3. Split Data
+  const historyData = sanitizedData.filter((d) => d.type === 'history');
+  const forecastData = sanitizedData.filter((d) => d.type === 'forecast');
+
+  // 4. Create Connector Line
+  const connectorData: ForecastData[] = [];
+  if (historyData.length > 0 && forecastData.length > 0) {
+    connectorData.push(historyData[historyData.length - 1]);
+    connectorData.push(forecastData[0]);
+  }
+
+  // 5. Handle Case: Only History (No Forecast returned)
+  if (forecastData.length === 0 && historyData.length > 0) {
+     return (
+        <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center">
+            <BarChart className="h-6 w-6 mr-2 text-indigo-500" />
+            12-Month Price Forecast
+          </CardTitle>
+          <CardDescription>
+            Only historical data available. AI could not generate a forecast.
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          <div className="h-72 w-full">
+             <ResponsiveContainer width="100%" height="100%">
+              <LineChart data={sanitizedData} margin={{ top: 5, right: 30, left: 20, bottom: 5 }}>
+                <CartesianGrid strokeDasharray="3 3" strokeOpacity={0.2} />
+                <XAxis dataKey="month" stroke="#9ca3af" fontSize={12} />
+                <YAxis stroke="#9ca3af" fontSize={12} domain={['auto', 'auto']} tickFormatter={(value) => `$${value}`} />
+                <Tooltip contentStyle={{ backgroundColor: "#1f2937", borderColor: "#374151", borderRadius: "0.5rem", color: "#f9fafb" }} />
+                <Legend />
+                <Line type="monotone" dataKey="price" stroke="#4f46e5" strokeWidth={2} name="Historical" dot={false} />
+              </LineChart>
+            </ResponsiveContainer>
+          </div>
+        </CardContent>
+      </Card>
+     )
+  }
 
   return (
     <Card>
@@ -76,7 +118,7 @@ export function StockChart({ data }: StockChartProps) {
         <div className="h-72 w-full">
           <ResponsiveContainer width="100%" height="100%">
             <LineChart
-              data={chartData}
+              data={sanitizedData} 
               margin={{
                 top: 5,
                 right: 30,
@@ -89,6 +131,7 @@ export function StockChart({ data }: StockChartProps) {
                 dataKey="month" 
                 stroke="#9ca3af" // gray-400
                 fontSize={12}
+                interval="preserveStartEnd" 
               />
               <YAxis 
                 stroke="#9ca3af" 
@@ -105,31 +148,47 @@ export function StockChart({ data }: StockChartProps) {
                 }}
                 labelStyle={{ color: "#f9fafb" }}
                 itemStyle={{ color: "#f9fafb" }}
-                formatter={(value: any) => value !== null ? `$${value.toFixed(2)}` : ''}
               />
               <Legend />
               
-              {/* The solid "Historical" line */}
+              {/* 1. Historical Line */}
               <Line
                 type="monotone"
-                dataKey="historicalPrice"
-                stroke="#4f46e5" // indigo-600
+                data={historyData}
+                dataKey="price"
+                stroke="#4f46e5"
                 strokeWidth={2}
                 name="Historical"
-                dot={false}
-                connectNulls={false}
+                dot={{ r: 4, fill: "#4f46e5", strokeWidth: 0 }}
+                activeDot={{ r: 6 }}
+                isAnimationActive={true}
               />
               
-              {/* The dashed "Forecast" line */}
+              {/* 2. Forecast Line */}
               <Line
                 type="monotone"
-                dataKey="forecastPrice"
-                stroke="#a78bfa" // violet-400
-                strokeWidth={2}
+                data={forecastData}
+                dataKey="price"
+                stroke="#a78bfa"
+                strokeWidth={3}
                 name="Forecast"
                 strokeDasharray="5 5"
+                dot={{ r: 4, fill: "#a78bfa", strokeWidth: 0 }}
+                activeDot={{ r: 6 }}
+                isAnimationActive={true}
+              />
+
+              {/* 3. Connector Line */}
+              <Line
+                type="monotone"
+                data={connectorData}
+                dataKey="price"
+                stroke="#a78bfa"
+                strokeWidth={2}
+                strokeDasharray="5 5"
                 dot={false}
-                connectNulls={false}
+                legendType="none"
+                isAnimationActive={false}
               />
             </LineChart>
           </ResponsiveContainer>
