@@ -21,12 +21,32 @@ model = None
 try:
     if GEMINI_API_KEY:
         genai.configure(api_key=GEMINI_API_KEY)
-        model = genai.GenerativeModel('gemini-pro')
+        try:
+            model = genai.GenerativeModel('gemini-pro')
+            print("Successfully initialized Gemini model: gemini-pro")
+        except Exception as model_error:
+            print(f"Error initializing Gemini model 'gemini-pro': {model_error}")
+            print("Trying alternative model names...")
+            # Try alternative model names
+            model_names = ['gemini-1.5-flash', 'models/gemini-pro', 'models/gemini-1.5-flash']
+            model = None
+            for model_name in model_names:
+                try:
+                    model = genai.GenerativeModel(model_name)
+                    print(f"Successfully initialized Gemini model: {model_name}")
+                    break
+                except Exception as e:
+                    print(f"Failed to initialize {model_name}: {e}")
+                    continue
+            
+            if model is None:
+                print("ERROR: Could not initialize any Gemini model. Please check your API key and model availability.")
     else:
         print("Warning: GEMINI_API_KEY is not set in environment.")
         
 except Exception as e:
     print(f"Error configuring Gemini API: {e}")
+    model = None
 
 # --- 1. RAG Retrieval ---
 
@@ -252,10 +272,22 @@ def get_analysis(prompt_text):
             }
             return json.dumps(fallback_response)
     except Exception as e:
-        print(f"Error during Gemini API call: {e}")
+        error_msg = str(e)
+        print(f"Error during Gemini API call: {error_msg}")
+        
+        # Check for specific error types
+        if "API key" in error_msg or "authentication" in error_msg.lower():
+            detailed_error = "AI Model could not be loaded. Check API keys. Please verify your GEMINI_API_KEY is set correctly in the environment variables."
+        elif "404" in error_msg or "not found" in error_msg.lower():
+            detailed_error = f"AI Model error: Model not found. Details: {error_msg}"
+        elif "403" in error_msg or "permission" in error_msg.lower():
+            detailed_error = f"AI Model error: Permission denied. Please check your API key permissions. Details: {error_msg}"
+        else:
+            detailed_error = f"Error: Could not get analysis from API. Details: {error_msg}"
+            
         error_response = {
-            "analysis": f"Error: Could not get analysis from API. Details: {str(e)}",
-            "keyNews": "API call failed",
+            "analysis": detailed_error,
+            "keyNews": "API call failed - please check backend logs for details",
             "forecastData": [],
             "investmentAdvice": {
                 "entryPoint": None,
@@ -265,3 +297,4 @@ def get_analysis(prompt_text):
         }
         return json.dumps(error_response)
     
+
