@@ -25,7 +25,7 @@ import {
   CardHeader,
   CardTitle,
   CardDescription
-} from "../components/ui/card"; 
+} from "./ui/card"; 
 
 import { ForecastData } from "../lib/types";
 
