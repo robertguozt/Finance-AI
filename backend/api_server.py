@@ -295,9 +295,9 @@ async def analyze_direct(request: AnalysisRequest, background_tasks: BackgroundT
         simple_response = {
             "analysis": "Analysis started... this may take a moment.",
             "investmentAdvice": {
-                "summary": "Processing your request",
-                "reasoning": "AI is analyzing your inputs",
-                "riskAssessment": "Calculating..."
+                "entryPoint": None,
+                "expectedReturn": None,
+                "stopLoss": None
             },
             "forecastData": [],
             "recommendedStocks": [],
@@ -345,4 +345,5 @@ if __name__ == "__main__":
     host = os.environ.get("HOST", "0.0.0.0") 
     print(f"--- Running on http://{host}:{port} ---")
     uvicorn.run("api_server:app", host=host, port=port, reload=False)
+
 
