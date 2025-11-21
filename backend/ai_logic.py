@@ -160,17 +160,7 @@ Analyze the provided stock data and generate a report with:
     "stopLoss": 140.00
   }}
 }}
-"""
-    fundamentals_str = "\n".join(f"- {key}: {value}" for key, value in fundamentals.items())
-    
-    if relevant_chunks:
-        news_str = "\n\n---\n\n".join(relevant_chunks)
-    else:
-        news_str = "No recent news articles were found or provided."
-        
-    formatted_system_prompt = system_prompt.format(user_profile=user_profile)
-    
-    user_prompt_data = f"""
+
 --- START OF DATA ---
 **Stock Ticker:** {ticker}
 **Financial Indicators:**
@@ -179,7 +169,7 @@ Analyze the provided stock data and generate a report with:
 {news_str}
 --- END OF DATA ---
 """
-    return formatted_system_prompt + user_prompt_data
+    return final_prompt
 
 # --- 3. AI Generation ---
 def get_analysis(prompt_text):
@@ -212,4 +202,3 @@ def get_analysis(prompt_text):
     except Exception as e:
         print(f"Error during Gemini API call: {e}")
         return json.dumps({"analysis": f"Error: {str(e)}", "forecastData": [], "investmentAdvice": {}})
-
