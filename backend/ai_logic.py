@@ -19,7 +19,7 @@ def configure_genai():
 
     try:
         genai.configure(api_key=GEMINI_API_KEY)
-        model_names = ['gemini-1.5-flash', 'gemini-1.5-pro', 'gemini-1.0-pro', 'gemini-pro']
+        model_names = ['models/gemini-2.5-flash', 'models/gemini-2.5-pro', 'models/gemini-2.0-pro', 'models/gemini-pro']
         for name in model_names:
             try:
                 print(f"Attempting to load model: {name}...")
@@ -170,3 +170,4 @@ def get_analysis(prompt_text):
     except Exception as e:
         print(f"Error during Gemini API call: {e}")
         return json.dumps({"analysis": f"Error: {str(e)}", "forecastData": [], "investmentAdvice": {}})
+
