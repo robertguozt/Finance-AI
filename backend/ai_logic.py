@@ -110,34 +110,37 @@ You are an expert financial analyst. Your task is to provide a comprehensive ana
 **YOUR TASK:**
 Analyze the provided stock data and generate a report with:
 1.  A 12-month price forecast (logical estimation based on data).
+**CRITICAL RULES:**
+1.  **START DATE:** The forecast MUST start from next month ({next_months[0]}).
+2.  **DURATION:** Provide exactly 12 data points for these months: {next_months_str}.
+3.  **NO HISTORY:** Do NOT include historical data. Only include future predictions.
+4.  **TREND:** Ensure the price curve is realistic based on the provided news and fundamentals.
+5.  Output must be a SINGLE JSON object.
 2.  Specific investment advice (entry point, return %, stop loss).
 
-**RULES:**
-1.  Base your analysis ONLY on the provided data.
-2.  The output must be a SINGLE JSON object. Do not include markdown formatting.
+**CRITICAL RULES:**
+1.  **START DATE:** The forecast MUST start from next month ({next_months[0]}).
+2.  **DURATION:** Provide exactly 12 data points for these months: {next_months_str}.
+3.  **NO HISTORY:** Do NOT include historical data. Only include future predictions.
+4.  **TREND:** Ensure the price curve is realistic based on the provided news and fundamentals.
+5.  **FULL CURVE:** Ensure you provide a price point for EVERY month listed above
+6.  **INVESTMENT ADVICE:** You MUST provide REALISTIC and attainable values for 'entry point', 'expected return' and 'stop loss'. Make sure they are attainable.
+7.  Output must be a SINGLE JSON object. Do not include markdown formatting. 
 
 **REQUIRED JSON OUTPUT FORMAT:**
 {{
   "analysis": "...",
   "keyNews": "...",
   "forecastData": [
-    {{"month": "Jan", "price": 150, "type": "history"}},
-    {{"month": "Feb", "price": 155, "type": "history"}},
-    {{"month": "Mar", "price": 160, "type": "history"}},
-    {{"month": "Apr", "price": 165, "type": "history"}},
-    {{"month": "May", "price": 170, "type": "history"}},
-    {{"month": "Jun", "price": 175, "type": "history"}},
-    {{"month": "Jul", "price": 180, "type": "history"}},
-    {{"month": "Aug", "price": 185, "type": "history"}},
-    {{"month": "Sep", "price": 190, "type": "forecast"}},
-    {{"month": "Oct", "price": 195, "type": "forecast"}},
-    {{"month": "Nov", "price": 200, "type": "forecast"}},
-    {{"month": "Dec", "price": 205, "type": "forecast"}}
+    {{"month": "{next_months[0]}", "price": 150.00, "type": "forecast"}},
+    {{"month": "{next_months[1]}", "price": 155.50, "type": "forecast"}},
+    ... (Continue for all 12 months) ...
+    {{"month": "{next_months[11]}", "price": 205.00, "type": "forecast"}}
   ],
   "investmentAdvice": {{
-    "entryPoint": 175.50,
-    "expectedReturn": 18.0,
-    "stopLoss": 168.00
+    "entryPoint": 150.00,
+    "expectedReturn": 15.5,
+    "stopLoss": 140.00
   }}
 }}
 """
@@ -213,4 +216,5 @@ def get_analysis(prompt_text):
             "forecastData": [],
             "investmentAdvice": {"entryPoint": 0, "expectedReturn": 0, "stopLoss": 0}
         })
+
 
