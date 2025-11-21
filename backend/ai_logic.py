@@ -1,6 +1,7 @@
 import sys
 import os
 import json
+import datetime
 import google.generativeai as genai
 from google.generativeai.types import HarmCategory, HarmBlockThreshold
 
@@ -211,3 +212,4 @@ def get_analysis(prompt_text):
     except Exception as e:
         print(f"Error during Gemini API call: {e}")
         return json.dumps({"analysis": f"Error: {str(e)}", "forecastData": [], "investmentAdvice": {}})
+
