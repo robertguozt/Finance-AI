@@ -98,6 +98,28 @@ def retrieve_relevant_chunks(query, vector_index, text_chunks, metadata, k=5):
 
 # --- 2. Prompt Engineering ---
 def build_prompt(ticker, fundamentals, relevant_chunks, citations, user_profile):
+    current_date = datetime.datetime.now()
+    current_month_str = current_date.strftime("%B %Y")
+    
+    next_months = []
+    for i in range(1, 13):
+        future_date = current_date + datetime.timedelta(days=30*i)
+        next_months.append(future_date.strftime("%b")) 
+    
+    # 2. Build the JSON Example String MANUALLY to avoid .format() errors
+    # This is the key fix. We construct the string in Python first.
+    forecast_rows = []
+    # Example price starting at 150 and growing slightly
+    start_price = 150.0
+    for i, month in enumerate(next_months):
+        price = start_price + (i * 2.5)
+        row = f'    {{"month": "{month}", "price": {price:.2f}, "type": "forecast"}}'
+        forecast_rows.append(row)
+    
+    forecast_data_str = ",\n".join(forecast_rows)
+
+
+    
     system_prompt = """
 You are an expert financial analyst. Your task is to provide a comprehensive analysis for a user.
 
@@ -107,15 +129,11 @@ You are an expert financial analyst. Your task is to provide a comprehensive ana
 - **Expected Return %:** {user_profile.expectedReturn}%
 - **Trading Preferences:** {user_profile.tradingPreferences}
 
+**CURRENT DATE:** {current_month_str}
+
 **YOUR TASK:**
 Analyze the provided stock data and generate a report with:
-1.  A 12-month price forecast (logical estimation based on data).
-**CRITICAL RULES:**
-1.  **START DATE:** The forecast MUST start from next month ({next_months[0]}).
-2.  **DURATION:** Provide exactly 12 data points for these months: {next_months_str}.
-3.  **NO HISTORY:** Do NOT include historical data. Only include future predictions.
-4.  **TREND:** Ensure the price curve is realistic based on the provided news and fundamentals.
-5.  Output must be a SINGLE JSON object.
+1.  Generate a **12-month price forecast** starting from NEXT MONTH ({next_months[0]}).
 2.  Specific investment advice (entry point, return %, stop loss).
 
 **CRITICAL RULES:**
@@ -125,18 +143,16 @@ Analyze the provided stock data and generate a report with:
 4.  **TREND:** Ensure the price curve is realistic based on the provided news and fundamentals.
 5.  **FULL CURVE:** Ensure you provide a price point for EVERY month listed above
 6.  **INVESTMENT ADVICE:** You MUST provide REALISTIC and attainable values for 'entry point', 'expected return' and 'stop loss'. Make sure they are attainable.
-7.  Output must be a SINGLE JSON object. Do not include markdown formatting. 
+7.  Base analysis ONLY on provided data.
+8.  Output must be a SINGLE JSON object. Do not include markdown formatting. 
 
 **REQUIRED JSON OUTPUT FORMAT:**
 {{
   "analysis": "...",
   "keyNews": "...",
   "forecastData": [
-    {{"month": "{next_months[0]}", "price": 150.00, "type": "forecast"}},
-    {{"month": "{next_months[1]}", "price": 155.50, "type": "forecast"}},
-    ... (Continue for all 12 months) ...
-    {{"month": "{next_months[11]}", "price": 205.00, "type": "forecast"}}
-  ],
+{forecast_data_str}
+  ]
   "investmentAdvice": {{
     "entryPoint": 150.00,
     "expectedReturn": 15.5,
@@ -169,25 +185,16 @@ def get_analysis(prompt_text):
     global model
     if not model:
         if not configure_genai():
-            return json.dumps({
-                "analysis": "Error: AI Model could not be loaded. Check API keys.",
-                "keyNews": "System Error",
-                "forecastData": [],
-                "investmentAdvice": {"entryPoint": 0, "expectedReturn": 0, "stopLoss": 0}
-            })
+             return json.dumps({"analysis": "Error: AI Model not loaded.", "forecastData": [], "investmentAdvice": {}})
         
     try:
         print("Generating analysis with Gemini API...")
-        
-        # --- NEW: Explicitly Disable ALL Safety Filters ---
-        # This is the key fix for "finish_reason 2"
         safety_settings = {
             HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_NONE,
             HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_NONE,
             HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT: HarmBlockThreshold.BLOCK_NONE,
             HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_NONE,
         }
-        
         generation_config = {"response_mime_type": "application/json"}
         
         response = model.generate_content(
@@ -196,25 +203,11 @@ def get_analysis(prompt_text):
             safety_settings=safety_settings
         )
         
-        # Safety Check: Even with settings off, check if it was blocked
         if response.prompt_feedback and response.prompt_feedback.block_reason:
-            print(f"Request blocked! Reason: {response.prompt_feedback.block_reason}")
-            return json.dumps({
-                "analysis": f"Analysis blocked by safety filter: {response.prompt_feedback.block_reason}. Please try a different stock.",
-                "keyNews": "Blocked",
-                "forecastData": [],
-                "investmentAdvice": {"entryPoint": 0, "expectedReturn": 0, "stopLoss": 0}
-            })
+            return json.dumps({"analysis": "Analysis blocked by safety filter.", "forecastData": [], "investmentAdvice": {}})
 
         return response.text
         
     except Exception as e:
         print(f"Error during Gemini API call: {e}")
-        return json.dumps({
-            "analysis": f"Error: {str(e)}",
-            "keyNews": "API call failed",
-            "forecastData": [],
-            "investmentAdvice": {"entryPoint": 0, "expectedReturn": 0, "stopLoss": 0}
-        })
-
-
+        return json.dumps({"analysis": f"Error: {str(e)}", "forecastData": [], "investmentAdvice": {}})
