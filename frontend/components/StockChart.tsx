@@ -53,19 +53,6 @@ export function StockChart({ data }: StockChartProps) {
     price: typeof item.price === 'string' ? parseFloat(item.price) : item.price,
     month: item.month || '?' 
   })).filter(item => !isNaN(item.price));
-
-  // 3. Split Data
-  const historyData = sanitizedData.filter((d) => d.type === 'history');
-  const forecastData = sanitizedData.filter((d) => d.type === 'forecast');
-
-  // 4. Create Connector Line
-  // This bridges the gap between the last historical point and the first forecast point
-  const connectorData: ForecastData[] = [];
-  if (historyData.length > 0 && forecastData.length > 0) {
-    connectorData.push(historyData[historyData.length - 1]);
-    connectorData.push(forecastData[0]);
-  }
-
   return (
     <Card>
       <CardHeader>
@@ -74,7 +61,7 @@ export function StockChart({ data }: StockChartProps) {
           12-Month Price Forecast
         </CardTitle>
         <CardDescription>
-          AI-generated forecast starting from next month.
+          AI-generated price prediction for the next 12 months.
         </CardDescription>
       </CardHeader>
       <CardContent>
@@ -111,47 +98,19 @@ export function StockChart({ data }: StockChartProps) {
                 }}
                 labelStyle={{ color: "#f9fafb" }}
                 itemStyle={{ color: "#f9fafb" }}
+                formatter={(value: any) => [`$${value}`, "Forecast Price"]}
               />
               <Legend />
               
-              {/* 1. Historical Line */}
               <Line
                 type="monotone"
-                data={historyData}
                 dataKey="price"
-                stroke="#4f46e5" 
-                strokeWidth={2}
-                name="Historical"
-                dot={{ r: 4, fill: "#4f46e5", strokeWidth: 0 }}
-                activeDot={{ r: 6 }}
-                isAnimationActive={true}
-              />
-              
-              {/* 2. Forecast Line */}
-              <Line
-                type="monotone"
-                data={forecastData}
-                dataKey="price"
-                stroke="#a78bfa" 
-                strokeWidth={3} 
+                stroke="#a78bfa" // violet-400
+                strokeWidth={3}
                 name="Forecast"
-                strokeDasharray="5 5"
                 dot={{ r: 4, fill: "#a78bfa", strokeWidth: 0 }}
                 activeDot={{ r: 6 }}
                 isAnimationActive={true}
-              />
-
-              {/* 3. Connector Line */}
-              <Line
-                type="monotone"
-                data={connectorData}
-                dataKey="price"
-                stroke="#a78bfa" 
-                strokeWidth={2}
-                strokeDasharray="5 5"
-                dot={false}
-                legendType="none" 
-                isAnimationActive={false}
               />
             </LineChart>
           </ResponsiveContainer>
