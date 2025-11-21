@@ -5,6 +5,7 @@ import sys
 import os
 import json
 import uuid # For creating unique job IDs
+import hashlib
 from fastapi import FastAPI, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -80,12 +81,19 @@ def init_db():
     conn = sqlite3.connect(DB_NAME)
     c = conn.cursor()
     
-    # Cache for *individual tickers* (from previous version)
+    # Cache with composite key (ticker + user preferences)
+    # Using cache_key as PRIMARY KEY to support user-specific caching
     c.execute('''
         CREATE TABLE IF NOT EXISTS cache
-        (ticker TEXT PRIMARY KEY,
+        (cache_key TEXT PRIMARY KEY,
+         ticker TEXT,
          analysis TEXT,
          timestamp REAL)
+    ''')
+    
+    # Create index on ticker for faster lookups (optional, for cleanup purposes)
+    c.execute('''
+        CREATE INDEX IF NOT EXISTS idx_ticker ON cache(ticker)
     ''')
     
     # --- NEW: Table to track job status ---
@@ -146,32 +154,65 @@ def get_job_status(job_id: str):
         print(f"Error getting job status: {e}")
     return {"status": "not_found", "result": None}
 
-# --- Caching Functions (Unchanged) ---
-def get_cached_analysis(ticker):
+# --- Cache Key Generation ---
+def generate_cache_key(ticker: str, trading_preferences: str, risk_tolerance: str, 
+                       expected_return: int, financial_condition: List[str]) -> str:
+    """
+    Generate a unique cache key based on ticker and user preferences.
+    This ensures recommendations are cached per user profile, not just per ticker.
+    """
+    # Create a string representation of all user preferences
+    prefs_string = f"{ticker}|{trading_preferences}|{risk_tolerance}|{expected_return}|{','.join(sorted(financial_condition))}"
+    # Generate a hash for the cache key
+    cache_key = hashlib.md5(prefs_string.encode('utf-8')).hexdigest()
+    return f"{ticker}_{cache_key}"
+
+# --- Caching Functions (Updated to include user preferences) ---
+def get_cached_analysis(ticker: str, trading_preferences: str, risk_tolerance: str,
+                        expected_return: int, financial_condition: List[str]):
+    """
+    Get cached analysis for a specific ticker and user profile combination.
+    """
     try:
+        cache_key = generate_cache_key(ticker, trading_preferences, risk_tolerance, 
+                                      expected_return, financial_condition)
         conn = sqlite3.connect(DB_NAME)
         c = conn.cursor()
-        c.execute("SELECT analysis, timestamp FROM cache WHERE ticker = ?", (ticker,))
+        c.execute("SELECT analysis, timestamp FROM cache WHERE cache_key = ?", (cache_key,))
         result = c.fetchone()
         conn.close()
         if result:
             analysis, timestamp = result
             if (time.time() - timestamp) < CACHE_DURATION:
+                print(f"Cache hit for {ticker} with user preferences")
                 return analysis
+            else:
+                print(f"Cache expired for {ticker} with user preferences")
     except sqlite3.OperationalError:
         print(f"Warning: Could not read from cache database at {DB_NAME}")
+    except Exception as e:
+        print(f"Error reading cache: {e}")
     return None
 
-def set_cached_analysis(ticker, analysis):
+def set_cached_analysis(ticker: str, analysis: str, trading_preferences: str, 
+                        risk_tolerance: str, expected_return: int, financial_condition: List[str]):
+    """
+    Cache analysis for a specific ticker and user profile combination.
+    """
     try:
+        cache_key = generate_cache_key(ticker, trading_preferences, risk_tolerance, 
+                                      expected_return, financial_condition)
         conn = sqlite3.connect(DB_NAME)
         c = conn.cursor()
-        c.execute("REPLACE INTO cache (ticker, analysis, timestamp) VALUES (?, ?, ?)",
-                  (ticker, analysis, time.time()))
+        c.execute("REPLACE INTO cache (cache_key, ticker, analysis, timestamp) VALUES (?, ?, ?, ?)",
+                  (cache_key, ticker, analysis, time.time()))
         conn.commit()
         conn.close()
+        print(f"Cached analysis for {ticker} with user preferences")
     except sqlite3.OperationalError:
         print(f"Warning: Could not write to cache database at {DB_NAME}")
+    except Exception as e:
+        print(f"Error writing cache: {e}")
 
 # --- 5. The Long-Running Analysis Task (NEW) ---
 def run_full_analysis_task(job_id: str, request: AnalysisRequest):
@@ -182,8 +223,14 @@ def run_full_analysis_task(job_id: str, request: AnalysisRequest):
         ticker = request.ticker.upper()
         print(f"--- [Background Job: {job_id}] Starting analysis for {ticker} ---")
         
-        # 1. Check cache first
-        cached_result = get_cached_analysis(ticker)
+        # 1. Check cache first (with user preferences)
+        cached_result = get_cached_analysis(
+            ticker=ticker,
+            trading_preferences=request.tradingPreferences,
+            risk_tolerance=request.riskTolerance,
+            expected_return=request.expectedReturn,
+            financial_condition=request.financialCondition
+        )
         if cached_result:
             print(f"[Background Job: {job_id}] Found cached result.")
             update_job_complete(job_id, cached_result)
@@ -243,7 +290,14 @@ def run_full_analysis_task(job_id: str, request: AnalysisRequest):
         final_json_string = json.dumps(ai_data)
         
         # --- TASK 4: Cache and Update Job Status ---
-        set_cached_analysis(ticker, final_json_string)
+        set_cached_analysis(
+            ticker=ticker,
+            analysis=final_json_string,
+            trading_preferences=request.tradingPreferences,
+            risk_tolerance=request.riskTolerance,
+            expected_return=request.expectedReturn,
+            financial_condition=request.financialCondition
+        )
         update_job_complete(job_id, final_json_string)
         print(f"--- [Background Job: {job_id}] Analysis for {ticker} complete. ---")
 
@@ -279,8 +333,14 @@ async def analyze_direct(request: AnalysisRequest):
         print(f"Expected Return: {request.expectedReturn}%")
         ticker = request.ticker.upper()
         
-        # Check cache first
-        cached_result = get_cached_analysis(ticker)
+        # Check cache first (with user preferences)
+        cached_result = get_cached_analysis(
+            ticker=ticker,
+            trading_preferences=request.tradingPreferences,
+            risk_tolerance=request.riskTolerance,
+            expected_return=request.expectedReturn,
+            financial_condition=request.financialCondition
+        )
         if cached_result:
             print("Returning cached result")
             return {"analysis": cached_result}
@@ -360,8 +420,15 @@ async def analyze_direct(request: AnalysisRequest):
         
         final_json_string = json.dumps(ai_data)
         
-        # --- Cache the result ---
-        set_cached_analysis(ticker, final_json_string)
+        # --- Cache the result (with user preferences) ---
+        set_cached_analysis(
+            ticker=ticker,
+            analysis=final_json_string,
+            trading_preferences=request.tradingPreferences,
+            risk_tolerance=request.riskTolerance,
+            expected_return=request.expectedReturn,
+            financial_condition=request.financialCondition
+        )
         
         print(f"=== Analysis Complete ===")
         return {"analysis": final_json_string}
@@ -418,6 +485,3 @@ if __name__ == "__main__":
     host = os.environ.get("HOST", "0.0.0.0") 
     print(f"--- Running on http://{host}:{port} ---")
     uvicorn.run("api_server:app", host=host, port=port, reload=False)
-
-
-
