@@ -10,11 +10,11 @@ import { StockChart } from "../components/StockChart";
 import { InvestmentAdvice } from "../components/InvestmentAdvice";
 import { RecommendedStocks } from "../components/RecommendedStocks";
 import { AnalysisSummary } from "../components/AnalysisSummary";
-import { SearchFormState, AnalysisResult } from "../lib/types";
+import type { SearchFormState, AnalysisResult } from "../lib/types";
 // --- NEW: Import types from the dedicated types file ---
 
 // HARDCODED BACKEND URL - Replace the environment variable
-const API_BASE_URL = "https://financeaibackend-uup2.onrender.com";
+const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL;
 
 // Debug log to check what URL we're using
 console.log('Using API URL:', API_BASE_URL);
@@ -26,10 +26,15 @@ export default function Home() {
   // State for the form inputs
   const [formState, setFormState] = useState<SearchFormState>({
     ticker: "AAPL",
-    financialCondition: ["Stable Income"],
+    financialCondition: ["stable_income"],
+    hasOtherFinancialCondition: false,
+    financialConditionOther: "",
     expectedReturn: 15,
     riskTolerance: "Medium",
-    tradingPreferences: "I am a long-term holder, I prefer tech.",
+    preferredSectors: ["Technology"],
+    investmentStyle: "growth",
+    holdingHorizon: "long",
+    tradingPreferences: "I prefer long-term technology investments.",
   });
 
   // State for the API call
@@ -47,6 +52,10 @@ export default function Home() {
     setResults(null); // Clear old results
 
     try {
+      if (!API_BASE_URL) {
+        throw new Error("NEXT_PUBLIC_API_URL is not configured.");
+      }
+
       // Call our Python FastAPI backend
       const response = await axios.post(
         `${API_BASE_URL}/api/analyze`,
@@ -68,16 +77,26 @@ export default function Home() {
       // Save the results to our state
       setResults(aiData);
 
-    } catch (error: any) {
+    } catch (error: unknown) {
       console.error("Error fetching analysis:", error);
+
       let errorMessage = "Failed to fetch analysis.";
-      if (error.response) {
-        errorMessage = `Server Error: ${error.response.data.detail || error.message}`;
-      } else if (error.request) {
-        errorMessage = `Connection Error: Is the Python server running at ${API_BASE_URL}?`;
-      } else {
+
+      if (axios.isAxiosError(error)) {
+        if (error.response) {
+          const detail = error.response.data?.detail;
+
+          errorMessage = `Server Error: ${detail || error.message}`;
+        } else if (error.request) {
+          errorMessage =
+            `Connection Error: Is the Python server running at ${API_BASE_URL}?`;
+        } else {
+          errorMessage = error.message;
+        }
+      } else if (error instanceof Error) {
         errorMessage = error.message;
       }
+
       setApiError(errorMessage);
     } finally {
       setIsLoading(false);
@@ -168,7 +187,7 @@ export default function Home() {
               Run an Analysis
             </h3>
             <p className="text-gray-500 dark:text-gray-400">
-              Fill out the form on the left and click "Analyze" to see your results.
+              Fill out the form on the left and click &quot;Analyze&quot; to see your results.
             </p>
           </div>
         )}

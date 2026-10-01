@@ -3,7 +3,7 @@ import os
 import json
 import datetime 
 import google.generativeai as genai
-from google.generativeai.types import HarmCategory, HarmBlockThreshold
+from google.generativeai.types import HarmCategory, HarmBlockThreshold, RequestOptions
 
 # --- Load API key ---
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
@@ -13,26 +13,24 @@ model = None
 
 def configure_genai():
     global model
+
+    if model is not None:
+        return True
+
     if not GEMINI_API_KEY:
         print("Error: GEMINI_API_KEY is not set.")
         return False
 
     try:
         genai.configure(api_key=GEMINI_API_KEY)
-        model_names = ['models/gemini-2.5-flash', 'models/gemini-2.5-pro', 'models/gemini-2.0-pro', 'models/gemini-pro']
-        for name in model_names:
-            try:
-                print(f"Attempting to load model: {name}...")
-                model = genai.GenerativeModel(name)
-                model.generate_content("Test") 
-                print(f"Success! Using model: {name}")
-                return True
-            except Exception as e:
-                print(f"Failed to load {name}: {e}")
-                continue
-        return False
-    except Exception as e:
-        print(f"Error configuring Gemini API: {e}")
+
+        model = genai.GenerativeModel("models/gemini-3.5-flash-lite")
+        print("Gemini model configured: models/gemini-3.5-flash-lite")
+        return True
+
+    except Exception as error:
+        model = None
+        print(f"Error configuring Gemini API: {error}")
         return False
 
 configure_genai()
@@ -66,7 +64,7 @@ def retrieve_relevant_chunks(query, vector_index, text_chunks, metadata, k=5):
     return relevant_chunks, list(citations)
 
 # --- 2. Prompt Engineering ---
-def build_prompt(ticker, fundamentals, relevant_chunks, citations, user_profile):
+def build_prompt(ticker, fundamentals, relevant_chunks, citations):
     
     # 1. Calculate Dates
     current_date = datetime.datetime.now()
@@ -75,21 +73,18 @@ def build_prompt(ticker, fundamentals, relevant_chunks, citations, user_profile)
     next_months = []
     for i in range(1, 13):
         future_date = current_date + datetime.timedelta(days=30*i)
-        next_months.append(future_date.strftime("%b")) 
-    
-    # 2. Build Forecast Example String (Manual Construction)
+        next_months.append(future_date.strftime("%b"))
+
+    # Build the required month structure without suggesting a price trend.
     forecast_rows = []
-    start_price = 150.0
-    for i, month in enumerate(next_months):
-        price = start_price + (i * 2.5)
-        # Note: double curly braces {{ }} are NOT needed here because this is a standard string, not an f-string
-        row = f'    {{ "month": "{month}", "price": {price:.2f}, "type": "forecast" }}'
+
+    for month in next_months:
+        row = f'    {{ "month": "{month}", "price": null, "type": "forecast" }}'
         forecast_rows.append(row)
-    
+
     forecast_data_str = ",\n".join(forecast_rows)
     
     # 3. Prepare Data Strings
-    financial_condition_str = ", ".join(user_profile.financialCondition)
     fundamentals_str = "\n".join(f"- {k}: {v}" for k, v in fundamentals.items())
     news_str = "\n\n---\n\n".join(relevant_chunks) if relevant_chunks else "No recent news."
     
@@ -98,22 +93,32 @@ def build_prompt(ticker, fundamentals, relevant_chunks, citations, user_profile)
     final_prompt = f"""
 You are an expert financial analyst. Your task is to provide a comprehensive analysis.
 
-**USER PROFILE:**
-- Financial Condition: {financial_condition_str}
-- Risk Tolerance: {user_profile.riskTolerance}
-- Expected Return: {user_profile.expectedReturn}%
-- Preferences: {user_profile.tradingPreferences}
-
 **CURRENT DATE:** {current_month_str}
+
+**DATA-QUALITY RULE:**
+- If any fundamental field is marked as unavailable, do not invent or estimate it.
+- Clearly state that the data source is temporarily unavailable.
 
 **YOUR TASK:**
 1. Generate a **12-month price forecast** starting from NEXT MONTH ({next_months[0]}).
 2. Provide **Specific Investment Advice**.
 
 **CRITICAL RULES:**
-1. Base analysis ONLY on provided data.
-2. **Forecast Data:** Provide exactly 12 data points for the future months. NO historical data.
-3. Output a SINGLE JSON object.
+1. Base the analysis ONLY on the provided data.
+2. Provide exactly 12 forecast data points for the required future months.
+3. Replace every null price placeholder with a positive JSON number.
+4. Generate the forecast independently of all user preferences,
+   suitability settings, and recommendation criteria.
+5. Monthly prices may rise or fall when supported by the available evidence.
+6. Avoid mechanically linear or automatically monotonic price sequences.
+7. Do not add artificial price changes merely to make the chart look realistic.
+8. Output a single valid JSON object.
+9. Replace the investmentAdvice null placeholders with numeric values.
+10. entryPoint and stopLoss must be positive numbers.
+11. expectedReturn must be derived from the supplied current price and
+    the final forecast price; it may be positive or negative.
+12. The investmentAdvice values must describe the analyzed stock only
+    and must not represent personalized financial advice.
 
 **REQUIRED JSON OUTPUT FORMAT:**
 {{
@@ -123,9 +128,9 @@ You are an expert financial analyst. Your task is to provide a comprehensive ana
 {forecast_data_str}
   ],
   "investmentAdvice": {{
-    "entryPoint": 150.00,
-    "expectedReturn": 15.5,
-    "stopLoss": 140.00
+    "entryPoint": null,
+    "expectedReturn": null,
+    "stopLoss": null
   }}
 }}
 
@@ -159,15 +164,16 @@ def get_analysis(prompt_text):
         response = model.generate_content(
             prompt_text,
             generation_config=generation_config,
-            safety_settings=safety_settings
+            safety_settings=safety_settings,
+            request_options=RequestOptions(timeout=180)
         )
         
         if response.prompt_feedback and response.prompt_feedback.block_reason:
             return json.dumps({"analysis": "Analysis blocked by safety filter.", "forecastData": [], "investmentAdvice": {}})
 
         return response.text
-        
+
     except Exception as e:
         print(f"Error during Gemini API call: {e}")
-        return json.dumps({"analysis": f"Error: {str(e)}", "forecastData": [], "investmentAdvice": {}})
+        raise RuntimeError("Gemini request failed") from e
 

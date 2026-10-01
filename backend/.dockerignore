@@ -1,0 +1,13 @@
+.env
+.env.*
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.idea/
+*.db
+*.sqlite
+*.sqlite3
+data_US_Stock_Stooq/
+test_*.py
+benchmark_*.py
+benchmarks.md.txt

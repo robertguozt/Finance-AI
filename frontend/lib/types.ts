@@ -1,17 +1,39 @@
-// --- Define the structure of the API request ---
+export type RiskTolerance = "Low" | "Medium" | "High";
+
+export type FinancialCondition =
+  | "stable_income"
+  | "variable_income"
+  | "high_debt"
+  | "emergency_fund";
+
+export type Sector =
+  | "Technology"
+  | "Finance"
+  | "Healthcare"
+  | "Consumer"
+  | "Energy"
+  | "Industrial";
+
+export type InvestmentStyle = "growth" | "balanced";
+export type HoldingHorizon = "short" | "medium" | "long";
+
 export interface SearchFormState {
   ticker: string;
-  financialCondition: string[];
+  financialCondition: FinancialCondition[];
+  hasOtherFinancialCondition: boolean;
+  financialConditionOther: string;
   expectedReturn: number;
-  riskTolerance: string;
+  riskTolerance: RiskTolerance;
+  preferredSectors: Sector[];
+  investmentStyle: InvestmentStyle;
+  holdingHorizon: HoldingHorizon;
   tradingPreferences: string;
 }
 
-// --- Define the structure of the API response ---
 export interface ForecastData {
   month: string;
   price: number;
-  type: 'history' | 'forecast';
+  type: "history" | "forecast";
 }
 
 export interface InvestmentAdviceData {
@@ -22,14 +44,17 @@ export interface InvestmentAdviceData {
 
 export interface RecommendedStockData {
   ticker: string;
-  name?: string;
+  score: number;
+  sector: string;
   reason: string;
+  current_price: number;
+  pe_ratio: number | null;
 }
 
 export interface AnalysisResult {
-  forecastData: any[];
-  investmentAdvice: any;
-  recommendedStocks: any[];
+  forecastData: ForecastData[];
+  investmentAdvice: InvestmentAdviceData;
+  recommendedStocks: RecommendedStockData[];
   analysis: string;
   keyNews: string;
 }

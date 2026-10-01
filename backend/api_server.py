@@ -1,6 +1,5 @@
 import uvicorn
-import sqlite3
-import time
+import psycopg2
 import sys
 import os
 import json
@@ -8,24 +7,33 @@ import uuid # For creating unique job IDs
 import hashlib
 from fastapi import FastAPI, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
-from typing import List, Optional
+from pydantic import BaseModel, Field
+from typing import List, Optional, Literal
 from contextlib import asynccontextmanager
+import redis
+from redis.exceptions import RedisError
+from dotenv import load_dotenv
+
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+load_dotenv(os.path.join(BASE_DIR, ".env"), override=False)
 
 # --- Import from our other files ---
 try:
     from data_fetcher import (
-        get_fundamentals, 
-        get_news, 
-        process_and_embed, 
-        load_embedding_model, 
-        download_nltk_data  
+        get_fundamentals,
+        get_news,
+        process_and_embed,
+        load_embedding_model,
+        download_nltk_data,
     )
     from ai_logic import retrieve_relevant_chunks, build_prompt, get_analysis
-    from stock_recommender import recommend_stocks
+    from stock_recommender_II import recommend_stocks
 except ImportError as e:
     print(f"Error: Could not import from helper files: {e}")
     sys.exit(1)
+
+#BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+#load_dotenv(os.path.join(BASE_DIR, ".env"), override=False)
 
 # --- Load API keys ---
 YOUR_API_KEY = os.environ.get("YOUR_API_KEY")
@@ -35,10 +43,19 @@ if not YOUR_API_KEY:
 # --- 1. Define API Models ---
 class AnalysisRequest(BaseModel):
     ticker: str
-    financialCondition: List[str]
-    expectedReturn: int
-    riskTolerance: str
-    tradingPreferences: str
+    financialCondition: List[
+        Literal["stable_income", "variable_income", "high_debt", "emergency_fund"]
+    ] = Field(default_factory=list)
+    hasOtherFinancialCondition: bool = False
+    financialConditionOther: str = Field(default="", max_length=300)
+    expectedReturn: int = Field(ge=0, le=100)
+    riskTolerance: Literal["Low", "Medium", "High"]
+    preferredSectors: List[
+        Literal["Technology", "Finance", "Healthcare", "Consumer", "Energy", "Industrial"]
+    ] = Field(default_factory=list)
+    investmentStyle: Literal["growth", "balanced"] = "balanced"
+    holdingHorizon: Literal["short", "medium", "long"] = "medium"
+    tradingPreferences: str = ""
 
 class AnalysisResponse(BaseModel):
     jobId: str
@@ -52,14 +69,17 @@ class StatusResponse(BaseModel):
 async def lifespan(app: FastAPI):
     """ Runs on server startup """
     print("--- Server starting up... ---")
-    print("--- Initializing database ---")
-    init_db()
+    print("--- Initializing PostgreSQL job storage ---")
+    init_postgres()
+    connect_redis()
     print("--- Downloading NLTK data (if needed) ---")
     download_nltk_data()
     print("--- Pre-loading embedding model ---")
     load_embedding_model()
     print("--- Startup complete. Server is ready. ---")
     yield
+    if redis_client is not None:
+        redis_client.close()
     print("--- Server shutting down... ---")
 
 # --- 3. Initialize FastAPI App ---
@@ -71,148 +91,299 @@ app.add_middleware(
 )
 
 # --- 4. Caching & Database Logic (UPDATED) ---
-DB_NAME = os.environ.get("DB_NAME", "analysis_cache.db")
-CACHE_DURATION = 3600  # 1 hour
+DATABASE_URL = os.environ.get("DATABASE_URL")
+CACHE_DURATION = 3600 # 1 hour
+REDIS_URL = os.environ.get("REDIS_URL", "redis://localhost:6379/0")
+CACHE_PREFIX = "analysis:v3"
+redis_client: Optional[redis.Redis] = None
+CREATE_JOBS_TABLE = """
+CREATE TABLE IF NOT EXISTS jobs (
+    job_id      UUID PRIMARY KEY,
+    status      VARCHAR(20) NOT NULL,
+    result      TEXT,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 
-def init_db():
-    db_dir = os.path.dirname(DB_NAME)
-    if db_dir and not os.path.exists(db_dir):
-        os.makedirs(db_dir)
-    conn = sqlite3.connect(DB_NAME)
-    c = conn.cursor()
-    
-    # Cache with composite key (ticker + user preferences)
-    # Using cache_key as PRIMARY KEY to support user-specific caching
-    c.execute('''
-        CREATE TABLE IF NOT EXISTS cache
-        (cache_key TEXT PRIMARY KEY,
-         ticker TEXT,
-         analysis TEXT,
-         timestamp REAL)
-    ''')
-    
-    # Create index on ticker for faster lookups (optional, for cleanup purposes)
-    c.execute('''
-        CREATE INDEX IF NOT EXISTS idx_ticker ON cache(ticker)
-    ''')
-    
-    # --- NEW: Table to track job status ---
-    c.execute('''
-        CREATE TABLE IF NOT EXISTS jobs
-        (job_id TEXT PRIMARY KEY,
-         status TEXT,
-         result TEXT,
-         timestamp REAL)
-    ''')
-    conn.commit()
-    conn.close()
+    CHECK (status IN ('pending', 'complete', 'failed'))
+);
+"""
 
-# --- Job Status Functions ---
-def create_job(job_id: str):
+def connect_redis():
+    global redis_client
+
     try:
-        conn = sqlite3.connect(DB_NAME)
-        c = conn.cursor()
-        c.execute("INSERT INTO jobs (job_id, status, result, timestamp) VALUES (?, ?, ?, ?)",
-                  (job_id, "pending", None, time.time()))
+        client = redis.Redis.from_url(
+            REDIS_URL,
+            decode_responses=True,
+            socket_connect_timeout=1,
+            socket_timeout=1,
+        )
+        client.ping()
+        redis_client = client
+        print("Redis cache connected.")
+    except RedisError as error:
+        redis_client = None
+        print(f"Warning: Redis is unavailable; cache is disabled. {error}")
+
+def extract_financial_conditions(other_text: str) -> set[str]:
+    text = other_text.lower()
+    conditions = set()
+
+    if any(word in text for word in [
+        "irregular income",
+        "variable income",
+        "freelance",
+        "student",
+    ]):
+        conditions.add("variable_income")
+
+    if any(word in text for word in [
+        "debt",
+        "loan",
+        "mortgage",
+        "credit card",
+    ]):
+        conditions.add("high_debt")
+
+    if any(word in text for word in [
+        "emergency fund",
+        "savings buffer",
+    ]):
+        conditions.add("emergency_fund")
+
+    return conditions
+
+def build_unavailable_fundamentals(ticker: str) -> tuple[dict, str]:
+    """
+    Provide transparent fallback data when the fundamentals provider is unavailable.
+    """
+    fundamentals = {
+        "Ticker": ticker,
+        "Data availability": (
+            "Fundamental data is temporarily unavailable because the "
+            "upstream provider rate-limited the request."
+        ),
+    }
+
+    summary = (
+        "Company summary is temporarily unavailable because the "
+        "upstream fundamentals provider rate-limited the request."
+    )
+
+    return fundamentals, summary
+
+def connect_postgres():
+    """
+    Create a short-lived PostgreSQL connection.
+
+    Each job operation opens and closes its own connection so that
+    connections are not accidentally shared between background tasks.
+    """
+    if not DATABASE_URL:
+        raise RuntimeError("DATABASE_URL is not configured.")
+
+    return psycopg2.connect(
+        DATABASE_URL,
+        connect_timeout=30,
+    )
+
+
+def init_postgres():
+    """
+    Ensure that the PostgreSQL jobs table exists.
+    """
+    conn = connect_postgres()
+
+    try:
+        with conn.cursor() as cur:
+            cur.execute(CREATE_JOBS_TABLE)
         conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
         conn.close()
-    except Exception as e:
-        print(f"Error creating job: {e}")
+
+
+def create_job(job_id: str):
+    """
+    Create a pending job before starting background analysis.
+    """
+    conn = connect_postgres()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO jobs (job_id, status, result)
+                VALUES (%s, %s, %s)
+                """,(job_id, "pending", None),
+            )
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
 
 def update_job_complete(job_id: str, result: str):
+    """
+    Store the completed analysis and mark the job complete.
+    """
+    conn = connect_postgres()
+
     try:
-        conn = sqlite3.connect(DB_NAME)
-        c = conn.cursor()
-        c.execute("UPDATE jobs SET status = ?, result = ? WHERE job_id = ?",
-                  ("complete", result, job_id))
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE jobs
+                SET
+                    status = %s,
+                    result = %s,
+                    updated_at = NOW()
+                WHERE job_id = %s
+                """,
+                (
+                    "complete",
+                    result,
+                    job_id,
+                ),
+            )
+
         conn.commit()
+
+    except Exception:
+        conn.rollback()
+        raise
+
+    finally:
         conn.close()
-    except Exception as e:
-        print(f"Error updating job to complete: {e}")
+
 
 def update_job_failed(job_id: str, error_message: str):
+    """
+    Store a safe error message and mark the job failed.
+    """
+    conn = connect_postgres()
+
     try:
-        conn = sqlite3.connect(DB_NAME)
-        c = conn.cursor()
-        c.execute("UPDATE jobs SET status = ?, result = ? WHERE job_id = ?",
-                  ("failed", error_message, job_id))
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE jobs
+                SET
+                    status = %s,
+                    result = %s,
+                    updated_at = NOW()
+                WHERE job_id = %s
+                """,
+                (
+                    "failed",
+                    error_message,
+                    job_id,
+                ),
+            )
         conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
         conn.close()
-    except Exception as e:
-        print(f"Error updating job to failed: {e}")
+
 
 def get_job_status(job_id: str):
+    """
+    Read the latest job state from PostgreSQL.
+    """
+    conn = connect_postgres()
+
     try:
-        conn = sqlite3.connect(DB_NAME)
-        c = conn.cursor()
-        c.execute("SELECT status, result FROM jobs WHERE job_id = ?", (job_id,))
-        result = c.fetchone()
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT status, result
+                FROM jobs
+                WHERE job_id = %s
+                """,
+                (job_id,),
+            )
+            row = cur.fetchone()
+        if row is None:
+            return {
+                "status": "not_found",
+                "result": None,
+            }
+        return {
+            "status": row[0],
+            "result": row[1],
+        }
+    finally:
         conn.close()
-        if result:
-            return {"status": result[0], "result": result[1]}
-    except Exception as e:
-        print(f"Error getting job status: {e}")
-    return {"status": "not_found", "result": None}
 
 # --- Cache Key Generation ---
-def generate_cache_key(ticker: str, trading_preferences: str, risk_tolerance: str, 
-                       expected_return: int, financial_condition: List[str]) -> str:
+def generate_cache_key(ticker: str, request: AnalysisRequest) -> str:
     """
-    Generate a unique cache key based on ticker and user preferences.
-    This ensures recommendations are cached per user profile, not just per ticker.
+    Create a deterministic Redis key for one complete user profile.
     """
-    # Create a string representation of all user preferences
-    prefs_string = f"{ticker}|{trading_preferences}|{risk_tolerance}|{expected_return}|{','.join(sorted(financial_condition))}"
-    # Generate a hash for the cache key
-    cache_key = hashlib.md5(prefs_string.encode('utf-8')).hexdigest()
-    return f"{ticker}_{cache_key}"
+    profile = {
+        "ticker": ticker.upper(),
+        "tradingPreferences": request.tradingPreferences.strip(),
+        "riskTolerance": request.riskTolerance,
+        "expectedReturn": request.expectedReturn,
+        "financialCondition": sorted(request.financialCondition),
+        "preferredSectors": sorted(request.preferredSectors),
+        "investmentStyle": request.investmentStyle,
+        "holdingHorizon": request.holdingHorizon,
+    }
 
-# --- Caching Functions (Updated to include user preferences) ---
-def get_cached_analysis(ticker: str, trading_preferences: str, risk_tolerance: str,
-                        expected_return: int, financial_condition: List[str]):
+    canonical_profile = json.dumps(
+        profile,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    profile_hash = hashlib.sha256(
+        canonical_profile.encode("utf-8")
+    ).hexdigest()
+
+    return f"{CACHE_PREFIX}:{ticker.upper()}:{profile_hash}"
+
+
+def get_cached_analysis(ticker: str, request: AnalysisRequest):
     """
-    Get cached analysis for a specific ticker and user profile combination.
+    Read a completed analysis from Redis. Return None on a cache miss
+    or when Redis is unavailable, so analysis can continue normally.
     """
+    if redis_client is None:
+        return None
+
     try:
-        cache_key = generate_cache_key(ticker, trading_preferences, risk_tolerance, 
-                                      expected_return, financial_condition)
-        conn = sqlite3.connect(DB_NAME)
-        c = conn.cursor()
-        c.execute("SELECT analysis, timestamp FROM cache WHERE cache_key = ?", (cache_key,))
-        result = c.fetchone()
-        conn.close()
-        if result:
-            analysis, timestamp = result
-            if (time.time() - timestamp) < CACHE_DURATION:
-                print(f"Cache hit for {ticker} with user preferences")
-                return analysis
-            else:
-                print(f"Cache expired for {ticker} with user preferences")
-    except sqlite3.OperationalError:
-        print(f"Warning: Could not read from cache database at {DB_NAME}")
-    except Exception as e:
-        print(f"Error reading cache: {e}")
+        cache_key = generate_cache_key(ticker, request)
+        cached_analysis = redis_client.get(cache_key)
+
+        if cached_analysis is not None:
+            print(f"Redis cache hit for {ticker}")
+            return cached_analysis
+
+        print(f"Redis cache miss for {ticker}")
+    except RedisError as error:
+        print(f"Warning: Redis cache read failed: {error}")
+
     return None
 
-def set_cached_analysis(ticker: str, analysis: str, trading_preferences: str, 
-                        risk_tolerance: str, expected_return: int, financial_condition: List[str]):
+
+def set_cached_analysis(ticker: str, analysis: str, request: AnalysisRequest):
     """
-    Cache analysis for a specific ticker and user profile combination.
+    Store a completed analysis in Redis with a one-hour TTL.
     """
+    if redis_client is None:
+        return
+
     try:
-        cache_key = generate_cache_key(ticker, trading_preferences, risk_tolerance, 
-                                      expected_return, financial_condition)
-        conn = sqlite3.connect(DB_NAME)
-        c = conn.cursor()
-        c.execute("REPLACE INTO cache (cache_key, ticker, analysis, timestamp) VALUES (?, ?, ?, ?)",
-                  (cache_key, ticker, analysis, time.time()))
-        conn.commit()
-        conn.close()
-        print(f"Cached analysis for {ticker} with user preferences")
-    except sqlite3.OperationalError:
-        print(f"Warning: Could not write to cache database at {DB_NAME}")
-    except Exception as e:
-        print(f"Error writing cache: {e}")
+        cache_key = generate_cache_key(ticker, request)
+        redis_client.set(cache_key, analysis, ex=CACHE_DURATION)
+        print(f"Stored Redis cache for {ticker}; TTL={CACHE_DURATION}s")
+    except RedisError as error:
+        print(f"Warning: Redis cache write failed: {error}")
 
 # --- 5. The Long-Running Analysis Task (NEW) ---
 def run_full_analysis_task(job_id: str, request: AnalysisRequest):
@@ -224,13 +395,7 @@ def run_full_analysis_task(job_id: str, request: AnalysisRequest):
         print(f"--- [Background Job: {job_id}] Starting analysis for {ticker} ---")
         
         # 1. Check cache first (with user preferences)
-        cached_result = get_cached_analysis(
-            ticker=ticker,
-            trading_preferences=request.tradingPreferences,
-            risk_tolerance=request.riskTolerance,
-            expected_return=request.expectedReturn,
-            financial_condition=request.financialCondition
-        )
+        cached_result = get_cached_analysis(ticker, request)
         if cached_result:
             print(f"[Background Job: {job_id}] Found cached result.")
             update_job_complete(job_id, cached_result)
@@ -243,7 +408,11 @@ def run_full_analysis_task(job_id: str, request: AnalysisRequest):
         print(f"[Background Job: {job_id}] Fetching fundamentals...")
         fundamentals, summary = get_fundamentals(ticker)
         if not fundamentals:
-            raise Exception(f"Could not fetch fundamental data for ticker: {ticker}")
+            print(
+                f"Fundamentals unavailable for {ticker}; "
+                "continuing with transparent fallback data."
+            )
+            fundamentals, summary = build_unavailable_fundamentals(ticker)
 
         print(f"[Background Job: {job_id}] Fetching news...")
         news = get_news(ticker, YOUR_API_KEY)
@@ -261,19 +430,29 @@ def run_full_analysis_task(job_id: str, request: AnalysisRequest):
             ticker=request.ticker,
             fundamentals=fundamentals,
             relevant_chunks=relevant_chunks,
-            citations=citations,
-            user_profile=request  
+            citations=citations
         )
         
         ai_json_string = get_analysis(user_prompt)
         
         # --- TASK 2: Get Rule-Based Recommendations (THE SLOW PART) ---
         print(f"[Background Job: {job_id}] Running rule-based stock recommender...")
+        effective_financial_condition = set(request.financialCondition)
+
+        if request.hasOtherFinancialCondition:
+            effective_financial_condition.update(
+                extract_financial_conditions(
+                    request.financialConditionOther
+                )
+            )
         recommendations_list = recommend_stocks(
             trading_history=request.tradingPreferences,
-            financial_condition=request.financialCondition,
+            financial_condition=list(effective_financial_condition),
             expected_return=request.expectedReturn,
-            risk_tolerance=request.riskTolerance
+            risk_tolerance=request.riskTolerance,
+            preferred_sectors=request.preferredSectors,
+            investment_style=request.investmentStyle,
+            holding_horizon=request.holdingHorizon
         )
         
         # --- TASK 3: Combine Results ---
@@ -290,14 +469,7 @@ def run_full_analysis_task(job_id: str, request: AnalysisRequest):
         final_json_string = json.dumps(ai_data)
         
         # --- TASK 4: Cache and Update Job Status ---
-        set_cached_analysis(
-            ticker=ticker,
-            analysis=final_json_string,
-            trading_preferences=request.tradingPreferences,
-            risk_tolerance=request.riskTolerance,
-            expected_return=request.expectedReturn,
-            financial_condition=request.financialCondition
-        )
+        set_cached_analysis(ticker, final_json_string, request)
         update_job_complete(job_id, final_json_string)
         print(f"--- [Background Job: {job_id}] Analysis for {ticker} complete. ---")
 
@@ -334,13 +506,7 @@ async def analyze_direct(request: AnalysisRequest):
         ticker = request.ticker.upper()
         
         # Check cache first (with user preferences)
-        cached_result = get_cached_analysis(
-            ticker=ticker,
-            trading_preferences=request.tradingPreferences,
-            risk_tolerance=request.riskTolerance,
-            expected_return=request.expectedReturn,
-            financial_condition=request.financialCondition
-        )
+        cached_result = get_cached_analysis(ticker, request)
         if cached_result:
             print("Returning cached result")
             return {"analysis": cached_result}
@@ -362,19 +528,13 @@ async def analyze_direct(request: AnalysisRequest):
         # --- Run the full analysis synchronously ---
         print(f"Fetching fundamentals for {ticker}...")
         fundamentals, summary = get_fundamentals(ticker)
+
         if not fundamentals:
-            error_response = {
-                "analysis": f"Error: Could not fetch fundamental data for ticker {ticker}.",
-                "keyNews": "Please check if the ticker symbol is valid.",
-                "forecastData": [],
-                "investmentAdvice": {
-                    "entryPoint": None,
-                    "expectedReturn": None,
-                    "stopLoss": None
-                },
-                "recommendedStocks": []
-            }
-            return {"analysis": json.dumps(error_response)}
+            print(
+                f"Fundamentals unavailable for {ticker}; "
+                "continuing with transparent fallback data."
+            )
+            fundamentals, summary = build_unavailable_fundamentals(ticker)
         
         print(f"Fetching news for {ticker}...")
         news = get_news(ticker, YOUR_API_KEY)
@@ -392,8 +552,7 @@ async def analyze_direct(request: AnalysisRequest):
             ticker=request.ticker,
             fundamentals=fundamentals,
             relevant_chunks=relevant_chunks,
-            citations=citations,
-            user_profile=request  
+            citations=citations
         )
         
         print(f"Calling AI model...")
@@ -401,11 +560,22 @@ async def analyze_direct(request: AnalysisRequest):
         
         # --- Get Rule-Based Recommendations ---
         print(f"Running rule-based stock recommender...")
+        effective_financial_condition = set(request.financialCondition)
+
+        if request.hasOtherFinancialCondition:
+            effective_financial_condition.update(
+                extract_financial_conditions(
+                    request.financialConditionOther
+                )
+            )
         recommendations_list = recommend_stocks(
             trading_history=request.tradingPreferences,
-            financial_condition=request.financialCondition,
+            financial_condition=list(effective_financial_condition),
             expected_return=request.expectedReturn,
-            risk_tolerance=request.riskTolerance
+            risk_tolerance=request.riskTolerance,
+            preferred_sectors=request.preferredSectors,
+            investment_style=request.investmentStyle,
+            holding_horizon=request.holdingHorizon
         )
         
         # --- Combine Results ---
@@ -421,14 +591,7 @@ async def analyze_direct(request: AnalysisRequest):
         final_json_string = json.dumps(ai_data)
         
         # --- Cache the result (with user preferences) ---
-        set_cached_analysis(
-            ticker=ticker,
-            analysis=final_json_string,
-            trading_preferences=request.tradingPreferences,
-            risk_tolerance=request.riskTolerance,
-            expected_return=request.expectedReturn,
-            financial_condition=request.financialCondition
-        )
+        set_cached_analysis(ticker, final_json_string, request)
         
         print(f"=== Analysis Complete ===")
         return {"analysis": final_json_string}

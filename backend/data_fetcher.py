@@ -4,6 +4,9 @@ import re
 import sys
 import os
 
+# bench
+CALL_COUNTS = {"yfinance": 0, "newsapi": 0}
+
 # --- Import ML/Vector libraries ---
 try:
     from sentence_transformers import SentenceTransformer
@@ -17,16 +20,22 @@ except ImportError:
 
 # --- Download NLTK data ---
 def download_nltk_data():
-    try:
-        nltk.data.find('tokenizers/punkt')
-    except LookupError:
-        print("NLTK 'punkt' tokenizer not found. Downloading...")
-        nltk.download('punkt', quiet=True)
-    try:
-        nltk.data.find('tokenizers/punkt_tab')
-    except LookupError:
-        print("NLTK 'punkt_tab' resource not found. Downloading...")
-        nltk.download('punkt_tab', quiet=True)
+    resources = [
+        ("punkt", "tokenizers/punkt"),
+        ("punkt_tab", "tokenizers/punkt_tab"),
+    ]
+
+    for package_name, resource_path in resources:
+        try:
+            nltk.data.find(resource_path)
+        except (LookupError, OSError):
+            print(f"NLTK '{package_name}' resource not found. Downloading...")
+            success = nltk.download(package_name, quiet=True)
+
+            if not success:
+                raise RuntimeError(
+                    f"Could not download NLTK resource: {package_name}"
+                )
 
 # --- Global var ---
 embedding_model = None
@@ -45,6 +54,7 @@ def load_embedding_model():
 def get_fundamentals(ticker_symbol):
     try:
         print(f"Fetching fundamentals for {ticker_symbol}...")
+        CALL_COUNTS["yfinance"] += 1
         ticker = yf.Ticker(ticker_symbol)
         info = ticker.info
         
@@ -54,6 +64,11 @@ def get_fundamentals(ticker_symbol):
              pass
 
         fundamentals = {
+            "Current Price": (
+                    info.get("currentPrice")
+                    or info.get("regularMarketPrice")
+                    or "N/A"
+            ),
             "Market Cap": info.get('marketCap', 'N/A'),
             "P/E Ratio (Trailing)": info.get('trailingPE', 'N/A'),
             "P/E Ratio (Forward)": info.get('forwardPE', 'N/A'),
@@ -88,6 +103,7 @@ def get_news(ticker_symbol, api_key, num_articles=20):
     
     try:
         print(f"Fetching news for {ticker_symbol}...")
+        CALL_COUNTS["newsapi"] += 1
         response = requests.get(base_url, params=params, timeout=10) # Add timeout
         response.raise_for_status()
         data = response.json()

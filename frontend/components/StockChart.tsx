@@ -1,6 +1,6 @@
 "use client";
 
-import { BarChart, Loader2 } from "lucide-react";
+import { BarChart } from "lucide-react";
 import {
   LineChart,
   Line,
@@ -20,7 +20,7 @@ import {
   CardDescription
 } from "./ui/card"; 
 
-import { ForecastData } from "../lib/types";
+import type { ForecastData } from "../lib/types";
 
 interface StockChartProps {
   data: ForecastData[];
@@ -98,7 +98,7 @@ export function StockChart({ data }: StockChartProps) {
                 }}
                 labelStyle={{ color: "#f9fafb" }}
                 itemStyle={{ color: "#f9fafb" }}
-                formatter={(value: any) => [`$${value}`, "Forecast Price"]}
+                formatter={(value) => [`$${value}`, "Forecast Price"]}
               />
               <Legend />
               

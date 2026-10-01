@@ -1,7 +1,7 @@
 "use client";
 import { Target, DollarSign, TrendingUp, TrendingDown } from "lucide-react";
 // --- FIX: Using relative path to import the type from page.tsx ---
-import { InvestmentAdviceData } from "../lib/types.ts"; 
+import type { InvestmentAdviceData } from "../lib/types";
 
 // This is a placeholder.
 export function InvestmentAdvice({ data }: { data: InvestmentAdviceData }) {

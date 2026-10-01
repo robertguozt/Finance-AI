@@ -7,13 +7,7 @@ const nextConfig = {
   experimental: {
     optimizeCss: true,
   },
-  // ADD THESE TWO NEW LINES to prevent build timeouts:
-  eslint: {
-    ignoreDuringBuilds: true,
-  },
-  typescript: {
-    ignoreBuildErrors: true,
-  },
+  
   pageExtensions: ['tsx', 'ts', 'jsx', 'js'], 
   trailingSlash: true,
   skipTrailingSlashRedirect: true,
