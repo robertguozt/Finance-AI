@@ -1,7 +1,7 @@
 import type { Metadata } from "next";
 import { Inter } from "next/font/google";
 import "./globals.css";
-import { cn } from "../lib/utils.ts"; // Import the utility function
+import { cn } from "../lib/utils"; // Import the utility function
 
 // Setup the default font
 const inter = Inter({ subsets: ["latin"], variable: "--font-sans" });

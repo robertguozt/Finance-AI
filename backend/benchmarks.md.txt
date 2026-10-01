@@ -1,0 +1,26 @@
+# Benchmarks
+
+**Method:** `python benchmark_baseline.py`, fixed ticker=AAPL, median of 5 runs.
+**Machine:** Local (Windows / conda base).
+
+## End-to-end analysis latency (before = SQLite + serial recommender)
+
+| Stage | Before | After |
+|---|---|---|
+| fundamentals | 0.812s | (TBD) |
+| news | 0.799s | (TBD) |
+| embed | 0.261s | (TBD) |
+| **recommend** | **25.017s** | (TBD) |
+| **Total** | **28.765s** | (TBD) |
+
+## Upstream API calls (per analysis)
+
+| Upstream | Before | After |
+|---|---|---|
+| yfinance | 31 | (TBD) |
+| newsapi | 1 | (TBD) |
+
+## Key findings
+- The `recommend` stage accounts for 87% of total latency — the sole bottleneck.
+- It serially fetches 30 tickers one by one, causing 30 of the 31 yfinance calls.
+- Optimization target: parallelize / replace live fetches with a local historical table to eliminate the 25s.

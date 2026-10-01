@@ -1,57 +1,47 @@
---- General ---
-
-Ignore OS-specific files
-
+# Operating system and editor files
 .DS_Store
 Thumbs.db
+.idea/
+.vscode/
+*.swp
 
---- Python / Backend ---
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.venv/
+venv/
+backend/myenv/
+backend/venv/
 
-Ignore the virtual environment folder
+# Secrets and local environment files
+.env
+.env.*
+!.env.example
+!**/.env.example
 
-/backend/myenv/
-/backend/venv/
-
-Ignore Python cache files
-
-pycache/
-*.pyc
-
-Ignore our local cache database!
-
-This is very important. Render will use its own.
-
+# Local databases and datasets
 *.db
 *.sqlite
 *.sqlite3
-analysis_cache.db
+backend/data_US_Stock_Stooq/
 
-Ignore local environment files (that might hold secrets)
+# Node and Next.js
+node_modules/
+.next/
+dist/
+out/
 
-.env
-.env.*
+# Local Vercel configuration
+.vercel/
 
---- Node / Frontend ---
-
-Ignore the massive node_modules folder
-
-/frontend/node_modules/
-/StockPreRecommFront/node_modules/
-
-Ignore local environment files
-
-/frontend/.env.local
-/StockPreRecommFront/.env.local
-
-Ignore build output
-
-/frontend/dist/
-/frontend/.next/
-/StockPreRecommFront/dist/
-/StockPreRecommFront/.next/
-
-Ignore logs
-
+# Logs
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
+*.log
+
+# Temporary local spreadsheets
+~$*.xlsx
+/*.xlsx
