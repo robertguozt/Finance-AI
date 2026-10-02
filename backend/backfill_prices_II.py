@@ -7,7 +7,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 DATABASE_URL = os.environ.get("DATABASE_URL")
-AV_KEY = os.environ.get("ALPHAVANTAGE_KEY")
+AV_KEY = os.environ.get("ALPHA_VANTAGE_API_KEY")
 
 TICKERS = ["AAPL", "MSFT", "GOOGL"]   # start with 3; free tier = 25 calls/day
 

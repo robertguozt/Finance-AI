@@ -28,6 +28,14 @@ CREATE TABLE IF NOT EXISTS fundamentals (
 );
 """
 
+ALTER_FUNDAMENTALS_ALPHA_COLUMNS = """
+ALTER TABLE fundamentals
+ADD COLUMN IF NOT EXISTS provider VARCHAR(50);
+
+ALTER TABLE fundamentals
+ADD COLUMN IF NOT EXISTS provider_data JSONB;
+"""
+
 CREATE_TICKER_FEATURES = """
 CREATE TABLE IF NOT EXISTS ticker_features (
     ticker            VARCHAR(10) NOT NULL,
@@ -68,6 +76,7 @@ cur = conn.cursor() # The hand that truly executes SQL and receives the results
 
 cur.execute(CREATE_PRICES)
 cur.execute(CREATE_FUNDAMENTALS)
+cur.execute(ALTER_FUNDAMENTALS_ALPHA_COLUMNS)
 cur.execute(CREATE_TICKER_FEATURES)
 cur.execute(CREATE_TICKER_FEATURES_HORIZON_INDEX)
 cur.execute(CREATE_JOBS)

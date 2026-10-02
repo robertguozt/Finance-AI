@@ -1,11 +1,16 @@
-import yfinance as yf
+#import yfinance as yf
 import requests
 import re
 import sys
 import os
+import psycopg2
+from psycopg2.extras import Json
 
 # bench
-CALL_COUNTS = {"yfinance": 0, "newsapi": 0}
+CALL_COUNTS = {"yfinance": 0, "alpha_vantage": 0, "newsapi": 0}
+
+ALPHA_VANTAGE_URL = "https://www.alphavantage.co/query"
+FUNDAMENTALS_CACHE_DAYS = 7
 
 # --- Import ML/Vector libraries ---
 try:
@@ -51,41 +56,325 @@ def load_embedding_model():
             print(f"Error loading embedding model: {e}")
 
 # --- 1. Data Fetching ---
-def get_fundamentals(ticker_symbol):
-    try:
-        print(f"Fetching fundamentals for {ticker_symbol}...")
-        CALL_COUNTS["yfinance"] += 1
-        ticker = yf.Ticker(ticker_symbol)
-        info = ticker.info
-        
-        # Basic error check
-        if not info or 'regularMarketPrice' not in info:
-             # yfinance sometimes returns partial data even on failure
-             pass
+def _number_or_none(value):
+    if value in (None, "", "None", "-", "N/A"):
+        return None
 
-        fundamentals = {
-            "Current Price": (
-                    info.get("currentPrice")
-                    or info.get("regularMarketPrice")
-                    or "N/A"
-            ),
-            "Market Cap": info.get('marketCap', 'N/A'),
-            "P/E Ratio (Trailing)": info.get('trailingPE', 'N/A'),
-            "P/E Ratio (Forward)": info.get('forwardPE', 'N/A'),
-            "Price-to-Book (P/B)": info.get('priceToBook', 'N/A'),
-            "PEG Ratio": info.get('pegRatio', 'N/A'),
-            "Dividend Yield": info.get('dividendYield', 'N/A'),
-            "Earnings per Share (EPS)": info.get('trailingEps', 'N/A'),
-            "Return on Equity (ROE)": info.get('returnOnEquity', 'N/A'),
-            "Debt-to-Equity": info.get('debtToEquity', 'N/A'),
-            "52 Week High": info.get('fiftyTwoWeekHigh', 'N/A'),
-            "52 Week Low": info.get('fiftyTwoWeekLow', 'N/A'),
-        }
-        summary = info.get('longBusinessSummary', 'No summary available.')
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _normalize_sector(raw_sector):
+    if not raw_sector:
+        return None
+
+    sector_map = {
+        "TECHNOLOGY": "Technology",
+        "FINANCE": "Finance",
+        "FINANCIAL SERVICES": "Finance",
+        "HEALTHCARE": "Healthcare",
+        "CONSUMER CYCLICAL": "Consumer",
+        "CONSUMER DEFENSIVE": "Consumer",
+        "ENERGY": "Energy",
+        "INDUSTRIALS": "Industrial",
+    }
+
+    normalized_key = str(raw_sector).strip().upper()
+    return sector_map.get(normalized_key, str(raw_sector).title())
+
+
+def _load_cached_alpha_data(ticker_symbol):
+    database_url = os.environ.get("DATABASE_URL")
+
+    if not database_url:
+        return None, False, None
+
+    conn = None
+
+    try:
+        conn = psycopg2.connect(database_url)
+
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT
+                    provider_data,
+                    updated_at >= NOW() - INTERVAL '7 days' AS is_fresh
+                FROM fundamentals
+                WHERE ticker = %s
+                  AND provider = 'alpha_vantage'
+                  AND provider_data IS NOT NULL
+                """,
+                (ticker_symbol,),
+            )
+            cache_row = cur.fetchone()
+
+            cur.execute(
+                """
+                SELECT close
+                FROM prices
+                WHERE ticker = %s
+                ORDER BY trade_date DESC
+                LIMIT 1
+                """,
+                (ticker_symbol,),
+            )
+            price_row = cur.fetchone()
+
+        cached_data = cache_row[0] if cache_row else None
+        is_fresh = bool(cache_row[1]) if cache_row else False
+        latest_price = float(price_row[0]) if price_row else None
+
+        if latest_price is None and cached_data:
+            latest_price = _number_or_none(
+                cached_data.get("_CachedCurrentPrice")
+            )
+
+        return cached_data, is_fresh, latest_price
+
+    except Exception as error:
+        print(f"Error reading fundamentals cache: {error}")
+        return None, False, None
+
+    finally:
+        if conn is not None:
+            conn.close()
+
+
+def _save_alpha_data(ticker_symbol, provider_data):
+    database_url = os.environ.get("DATABASE_URL")
+
+    if not database_url:
+        print("DATABASE_URL is not configured; skipping fundamentals cache.")
+        return
+
+    raw_market_cap = _number_or_none(
+        provider_data.get("MarketCapitalization")
+    )
+    market_cap = int(raw_market_cap) if raw_market_cap is not None else None
+    sector = _normalize_sector(provider_data.get("Sector"))
+
+    conn = None
+
+    try:
+        conn = psycopg2.connect(database_url)
+
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO fundamentals (
+                    ticker,
+                    sector,
+                    market_cap,
+                    provider,
+                    provider_data,
+                    updated_at
+                )
+                VALUES (%s, %s, %s, %s, %s, NOW())
+                ON CONFLICT (ticker)
+                DO UPDATE SET
+                    sector = COALESCE(
+                        EXCLUDED.sector,
+                        fundamentals.sector
+                    ),
+                    market_cap = COALESCE(
+                        EXCLUDED.market_cap,
+                        fundamentals.market_cap
+                    ),
+                    provider = EXCLUDED.provider,
+                    provider_data = EXCLUDED.provider_data,
+                    updated_at = NOW()
+                """,
+                (
+                    ticker_symbol,
+                    sector,
+                    market_cap,
+                    "alpha_vantage",
+                    Json(provider_data),
+                ),
+            )
+
+        conn.commit()
+        print(f"Saved Alpha Vantage fundamentals for {ticker_symbol}.")
+
+    except Exception as error:
+        if conn is not None:
+            conn.rollback()
+
+        print(f"Error saving fundamentals cache: {error}")
+
+    finally:
+        if conn is not None:
+            conn.close()
+
+
+def _fetch_alpha_overview(ticker_symbol, api_key):
+    CALL_COUNTS.setdefault("alpha_vantage", 0)
+    CALL_COUNTS["alpha_vantage"] += 1
+
+    response = requests.get(
+        ALPHA_VANTAGE_URL,
+        params={
+            "function": "OVERVIEW",
+            "symbol": ticker_symbol,
+            "apikey": api_key,
+        },
+        timeout=15,
+    )
+    response.raise_for_status()
+
+    data = response.json()
+
+    provider_error = (
+        data.get("Error Message")
+        or data.get("Information")
+        or data.get("Note")
+    )
+
+    if provider_error:
+        raise RuntimeError(provider_error)
+
+    if data.get("Symbol", "").upper() != ticker_symbol:
+        raise RuntimeError(
+            f"Alpha Vantage returned no overview for {ticker_symbol}."
+        )
+
+    return data
+
+
+def _fetch_alpha_price(ticker_symbol, api_key):
+    CALL_COUNTS.setdefault("alpha_vantage", 0)
+    CALL_COUNTS["alpha_vantage"] += 1
+
+    response = requests.get(
+        ALPHA_VANTAGE_URL,
+        params={
+            "function": "GLOBAL_QUOTE",
+            "symbol": ticker_symbol,
+            "apikey": api_key,
+        },
+        timeout=15,
+    )
+    response.raise_for_status()
+
+    data = response.json()
+
+    provider_error = (
+        data.get("Error Message")
+        or data.get("Information")
+        or data.get("Note")
+    )
+
+    if provider_error:
+        raise RuntimeError(provider_error)
+
+    quote = data.get("Global Quote", {})
+    return _number_or_none(quote.get("05. price"))
+
+
+def _build_fundamentals(provider_data, current_price):
+    fundamentals = {}
+
+    if current_price is not None:
+        fundamentals["Current Price"] = current_price
+
+    field_map = {
+        "Market Cap": "MarketCapitalization",
+        "P/E Ratio (Trailing)": "TrailingPE",
+        "P/E Ratio (Forward)": "ForwardPE",
+        "Price-to-Book (P/B)": "PriceToBookRatio",
+        "PEG Ratio": "PEGRatio",
+        "Dividend Yield": "DividendYield",
+        "Earnings per Share (EPS)": "EPS",
+        "Return on Equity (ROE)": "ReturnOnEquityTTM",
+        "52 Week High": "52WeekHigh",
+        "52 Week Low": "52WeekLow",
+    }
+
+    for display_name, provider_name in field_map.items():
+        value = _number_or_none(provider_data.get(provider_name))
+
+        if value is not None:
+            if display_name == "Market Cap":
+                fundamentals[display_name] = int(value)
+            else:
+                fundamentals[display_name] = value
+
+    sector = _normalize_sector(provider_data.get("Sector"))
+
+    if sector:
+        fundamentals["Sector"] = sector
+
+    return fundamentals
+
+
+def get_fundamentals(ticker_symbol):
+    ticker_symbol = ticker_symbol.strip().upper()
+
+    cached_data, cache_is_fresh, current_price = (
+        _load_cached_alpha_data(ticker_symbol)
+    )
+
+    if cached_data and cache_is_fresh:
+        print(f"Using cached Alpha Vantage data for {ticker_symbol}.")
+        fundamentals = _build_fundamentals(cached_data,current_price)
+        summary = (
+            cached_data.get("Description")
+            or "No company summary was provided."
+        )
         return fundamentals, summary
-    except Exception as e:
-        print(f"Error fetching fundamentals: {e}")
-        return {}, "Error fetching summary."
+
+    api_key = os.environ.get("ALPHA_VANTAGE_API_KEY")
+
+    if not api_key:
+        print("Error: ALPHA_VANTAGE_API_KEY is not configured.")
+
+        if cached_data:
+            print(f"Using stale cached data for {ticker_symbol}.")
+            return (
+                _build_fundamentals(cached_data, current_price),
+                cached_data.get("Description")
+                or "No company summary was provided.",
+            )
+
+        return {}, "Error fetching company summary."
+
+    try:
+        print(
+            f"Fetching Alpha Vantage fundamentals for "
+            f"{ticker_symbol}..."
+        )
+        provider_data = _fetch_alpha_overview(ticker_symbol, api_key)
+
+        if current_price is None:
+            current_price = _fetch_alpha_price(ticker_symbol, api_key)
+
+            if current_price is not None:
+                provider_data["_CachedCurrentPrice"] = current_price
+
+        _save_alpha_data(ticker_symbol, provider_data)
+
+        fundamentals = _build_fundamentals(provider_data, current_price)
+        summary = (
+            provider_data.get("Description")
+            or "No company summary was provided."
+        )
+
+        return fundamentals, summary
+
+    except Exception as error:
+        print(f"Error fetching Alpha Vantage fundamentals: {error}")
+        if cached_data:
+            print(f"Using stale cached data for {ticker_symbol}.")
+            return (
+                _build_fundamentals(cached_data, current_price),
+                cached_data.get("Description")
+                or "No company summary was provided.",
+            )
+
+        return {}, "Error fetching company summary."
 
 def get_news(ticker_symbol, api_key, num_articles=20):
     if not api_key:
@@ -107,7 +396,6 @@ def get_news(ticker_symbol, api_key, num_articles=20):
         response = requests.get(base_url, params=params, timeout=10) # Add timeout
         response.raise_for_status()
         data = response.json()
-        
         if data.get('status') == 'ok':
             articles = data.get('articles', [])
             return articles
