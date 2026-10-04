@@ -1,10 +1,10 @@
-#import yfinance as yf
 import requests
 import re
 import sys
 import os
 import psycopg2
 from psycopg2.extras import Json
+import time
 
 # bench
 CALL_COUNTS = {"yfinance": 0, "alpha_vantage": 0, "newsapi": 0}
@@ -213,6 +213,7 @@ def _save_alpha_data(ticker_symbol, provider_data):
 def _fetch_alpha_overview(ticker_symbol, api_key):
     CALL_COUNTS.setdefault("alpha_vantage", 0)
     CALL_COUNTS["alpha_vantage"] += 1
+    time.sleep(1.2)
 
     response = requests.get(
         ALPHA_VANTAGE_URL,
@@ -247,6 +248,7 @@ def _fetch_alpha_overview(ticker_symbol, api_key):
 def _fetch_alpha_price(ticker_symbol, api_key):
     CALL_COUNTS.setdefault("alpha_vantage", 0)
     CALL_COUNTS["alpha_vantage"] += 1
+    time.sleep(1.2)
 
     response = requests.get(
         ALPHA_VANTAGE_URL,
