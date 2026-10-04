@@ -2,13 +2,11 @@
 import time
 import statistics
 
-# 旧引擎和新引擎,分别 import(注意两个文件里函数同名,用 as 区分)
 from stock_recommender import recommend_stocks as recommend_old
 from stock_recommender_II import recommend_stocks as recommend_new
 
-# 统一的测试输入
 ARGS = ("I like tech growth stocks", ["stable income"], 15, "Medium")
-N = 3   # 每个引擎跑几次取中位数
+N = 3  
 
 def time_engine(func, label, runs=N):
     times = []
